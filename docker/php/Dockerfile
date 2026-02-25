@@ -1,4 +1,4 @@
-FROM php:8.3-fpm-alpine
+FROM php:8.4-fpm-alpine
 
 WORKDIR /var/www/html
 
@@ -12,6 +12,7 @@ RUN apk add --no-cache \
     libzip-dev \
     oniguruma-dev \
     postgresql-dev \
+    $PHPIZE_DEPS \
     unzip \
     zip \
     && docker-php-ext-configure intl \
@@ -24,6 +25,8 @@ RUN apk add --no-cache \
         pdo_pgsql \
         zip \
         gd \
+    && pecl install redis \
+    && docker-php-ext-enable redis \
     && rm -rf /tmp/*
 
 # Composer
@@ -35,5 +38,3 @@ COPY docker/php/php.ini /usr/local/etc/php/conf.d/analytica.ini
 # Create storage dirs (for fresh volumes)
 RUN mkdir -p storage bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache
-
-USER www-data

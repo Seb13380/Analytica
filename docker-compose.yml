@@ -3,8 +3,11 @@ services:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
+    command: sh -lc "chown -R www-data:www-data storage bootstrap/cache || true; php-fpm"
     volumes:
       - ./:/var/www/html
+      - analytica_storage:/var/www/html/storage
+      - analytica_bootstrap_cache:/var/www/html/bootstrap/cache
     environment:
       APP_ENV: local
     depends_on:
@@ -26,9 +29,13 @@ services:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
-    command: php artisan queue:work --sleep=1 --tries=3 --timeout=120
+    command: sh -lc "chown -R www-data:www-data storage bootstrap/cache || true; php artisan queue:work --sleep=1 --tries=3 --timeout=900"
     volumes:
       - ./:/var/www/html
+      - analytica_storage:/var/www/html/storage
+      - analytica_bootstrap_cache:/var/www/html/bootstrap/cache
+    environment:
+      APP_ENV: local
     depends_on:
       - app
       - redis
@@ -61,11 +68,30 @@ services:
     volumes:
       - analytica_minio:/data
 
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-lc"]
+    command: >
+      "
+      until mc alias set analytica http://minio:9000 minio minio123456; do sleep 1; done;
+      mc mb --ignore-existing analytica/analytica;
+      mc anonymous set none analytica/analytica;
+      "
+
   mailpit:
     image: axllent/mailpit:latest
     ports:
-      - "8025:8025"
-      - "1025:1025"
+      - "8026:8025"
+      - "1026:1025"
+
+  ocr:
+    build:
+      context: .
+      dockerfile: ocr/Dockerfile
+    ports:
+      - "8000:8000"
 
   node:
     image: node:20-alpine
@@ -79,3 +105,5 @@ services:
 volumes:
   analytica_pgdata:
   analytica_minio:
+  analytica_storage:
+  analytica_bootstrap_cache:
