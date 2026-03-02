@@ -20,6 +20,10 @@ class CaseFile extends Model
         'analysis_period_end',
         'status',
         'global_score',
+        'ai_last_prompt',
+        'ai_last_result',
+        'ai_last_error',
+        'ai_last_ran_at',
         'expires_at',
     ];
 
@@ -27,6 +31,8 @@ class CaseFile extends Model
         'death_date' => 'date',
         'analysis_period_start' => 'date',
         'analysis_period_end' => 'date',
+        'ai_last_result' => 'array',
+        'ai_last_ran_at' => 'datetime',
         'expires_at' => 'datetime',
     ];
 
@@ -53,5 +59,10 @@ class CaseFile extends Model
     public function reports(): HasMany
     {
         return $this->hasMany(Report::class, 'case_id');
+    }
+
+    public function beneficiaryAliasOverrides(): HasMany
+    {
+        return $this->hasMany(\App\Models\BeneficiaryAliasOverride::class, 'case_id');
     }
 }

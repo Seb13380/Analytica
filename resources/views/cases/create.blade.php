@@ -1,14 +1,15 @@
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
-            {{ __('Créer un dossier') }}
+        <h2 style="font-family:'Cormorant Garamond',serif;font-weight:400;font-size:1.5rem;color:#1C1916;">
+            Créer un dossier
         </h2>
     </x-slot>
 
     <div class="py-12">
         <div class="max-w-3xl mx-auto sm:px-6 lg:px-8">
-            <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg">
-                <div class="p-6 text-gray-900">
+            <div class="bg-white overflow-hidden luxury-card">
+                <div style="height:2px;background:linear-gradient(90deg,#9B7A2A,#E0C278,#9B7A2A);"></div>
+                <div class="p-6" style="color:#1C1916;">
                     <form method="POST" action="{{ route('cases.store') }}" class="space-y-4">
                         @csrf
 
@@ -19,8 +20,8 @@
                         </div>
 
                         <div>
-                            <x-input-label for="organization_id" :value="__('Organisation (optionnel)')" />
-                            <select id="organization_id" name="organization_id" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm">
+                            <x-input-label for="organization_id" value="Organisation (optionnel)" />
+                            <select id="organization_id" name="organization_id" class="select-luxury mt-1">
                                 <option value="">—</option>
                                 @foreach ($organizations as $org)
                                     <option value="{{ $org->id }}" @selected(old('organization_id') == $org->id)>
@@ -59,14 +60,9 @@
                             </div>
                         </div>
 
-                        <div class="flex items-center gap-3">
-                            <x-primary-button>
-                                {{ __('Créer') }}
-                            </x-primary-button>
-
-                            <a class="text-sm text-gray-600 hover:underline" href="{{ route('cases.index') }}">
-                                {{ __('Annuler') }}
-                            </a>
+                        <div class="flex items-center gap-4">
+                            <x-primary-button>Créer</x-primary-button>
+                            <a style="font-size:0.75rem;color:#5C5449;text-decoration:underline;" href="{{ route('cases.index') }}">Annuler</a>
                         </div>
                     </form>
                 </div>

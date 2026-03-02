@@ -6,7 +6,9 @@ use App\Models\Statement;
 use App\Models\Transaction;
 use App\Services\AnalysisEngine;
 use App\Services\EncryptedFileStorage;
+use App\Services\Normalization;
 use App\Services\StatementImportService;
+use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
@@ -50,6 +52,10 @@ class ImportStatementJob implements ShouldQueue
             'import_status' => 'processing',
             'import_error' => null,
         ])->save();
+
+        $cachedExtractedText = is_string($statement->extracted_text ?? null)
+            ? (string) $statement->extracted_text
+            : '';
 
         try {
             $bytes = $storage->getDecryptedBytes($statement->file_path, $statement->encryption_meta ?? []);
@@ -142,6 +148,34 @@ class ImportStatementJob implements ShouldQueue
                     }
                 }
 
+                // Fallback resilience: si l'OCR live a échoué (0 transactions) OU a retourné
+                // moins de X% des transactions issues du texte OCR déjà stocké en base,
+                // réutiliser ce texte stocké plutôt que de perdre des données.
+                if (trim($cachedExtractedText) !== '') {
+                    $cachedYear    = $this->guessDefaultYear($statement->original_filename, $cachedExtractedText) ?? $defaultYear;
+                    $cachedTx      = $importer->parseTransactionsFromText($cachedExtractedText, $cachedYear);
+                    $liveCount     = count($transactions);
+                    $cachedCount   = count($cachedTx);
+                    $cacheFallbackRatio = (float) config('analytica.import.ocr_cache_fallback_ratio', 0.50);
+
+                    $useCachedFallback = $cachedTx !== []
+                        && ($liveCount === 0
+                            || ($cachedCount > 0 && $liveCount < (int) ceil($cachedCount * $cacheFallbackRatio)));
+
+                    if ($useCachedFallback) {
+                        if ($liveCount > 0) {
+                            // OCR gave some results but not enough — log degradation.
+                            \Illuminate\Support\Facades\Log::warning(
+                                "ImportStatementJob [stmt={$this->statementId}]: OCR live ({$liveCount} tx) < {$cacheFallbackRatio}×cache ({$cachedCount} tx). Basculement sur texte OCR stocké."
+                            );
+                        }
+                        $text        = $cachedExtractedText;
+                        $sourceText  = $cachedExtractedText;
+                        $transactions = $cachedTx;
+                        $ocrUsed     = true;
+                    }
+                }
+
                 $statement->forceFill([
                     'extracted_text' => $text,
                     'ocr_used' => $ocrUsed,
@@ -187,7 +221,14 @@ class ImportStatementJob implements ShouldQueue
                     $maxText = (float) max($textHighValues);
                     $maxParsed = (float) max($parsedHighValues);
 
-                    if ($maxText >= 50000 && $maxParsed < ($maxText * 0.5)) {
+                    // Keep a strict gate only for MASSIVE mismatches.
+                    // OCR can overestimate some cheque amounts (e.g. 30 000 read as 80 000),
+                    // so medium mismatches should not hard-fail the whole import.
+                    $massiveMismatch = $maxText >= 100000
+                        && $maxParsed < ($maxText * 0.35)
+                        && ($maxText - $maxParsed) >= 50000;
+
+                    if ($massiveMismatch) {
                         $statement->forceFill([
                             'import_status' => 'failed',
                             'transactions_imported' => 0,
@@ -222,52 +263,215 @@ class ImportStatementJob implements ShouldQueue
             $firstInsertError = null;
             $deletedExisting = 0;
 
-            $cleanupRange = $this->resolveCleanupRange($transactions);
+            $cleanupRange           = $this->resolveCleanupRange($transactions);
+            $allowDbDedupHeuristics = (bool) config('analytica.import.allow_db_dedup_heuristics', false);
 
-            DB::transaction(function () use ($bankAccount, $transactions, $cleanupRange, &$inserted, &$insertErrors, &$firstInsertError, &$deletedExisting) {
-                if ($cleanupRange !== null) {
+            if ($cleanupRange !== null) {
+                // ── Sécurité cleanup: compter AVANT de supprimer ─────────────────────────
+                // On ne supprime les transactions existantes que si les nouvelles en couvrent
+                // au moins cleanup_min_coverage_ratio (80% par défaut).
+                // Cela protège deux scénarios critiques :
+                //   (A) retry attempt 2 : le premier essai a inséré N tx, l'OCR du second
+                //       essai est partiel → on ne doit pas effacer plus qu'on peut remplacer.
+                //   (B) re-import accidentel avec un OCR dégradé (timeout partiel).
+                $existingCount   = Transaction::query()
+                    ->where('bank_account_id', $bankAccount->getKey())
+                    ->whereBetween('date', [$cleanupRange['start'], $cleanupRange['end']])
+                    ->count();
+
+                $newCount        = count($transactions);
+                $minCoverage     = (float) config('analytica.import.cleanup_min_coverage_ratio', 0.80);
+                $coverageOk      = $existingCount === 0
+                    || $newCount >= (int) ceil($existingCount * $minCoverage);
+
+                if ($coverageOk) {
                     $deletedExisting = Transaction::query()
                         ->where('bank_account_id', $bankAccount->getKey())
                         ->whereBetween('date', [$cleanupRange['start'], $cleanupRange['end']])
                         ->delete();
+                } else {
+                    \Illuminate\Support\Facades\Log::warning(
+                        "ImportStatementJob [stmt={$this->statementId}]: cleanup annulé. "
+                        ."Existant={$existingCount}, nouveaux={$newCount} (< {$minCoverage}×). "
+                        ."Conservation des données existantes pour éviter la perte nette."
+                    );
+                    // Le flag unique SQL transactions_dedupe gérera l'idempotence lors des inserts.
                 }
+            }
 
-                foreach ($transactions as $tx) {
-                    try {
-                        $payload = $this->normalizeTransactionPayloadForInsert($tx);
+            // ── Build account section map for multi-account PDFs ────────────────────
+            // BNP PDFs can embed multiple account sections (joint account / personal
+            // account / livret). Each section is tagged in meta.account_section.
+            // We find or create a separate BankAccount record per section so that
+            // transactions for each account are stored and filtered independently.
+            /** @var array<string,int> $sectionAccountMap */
+            $sectionAccountMap = ['joint' => $bankAccount->getKey()];
 
-                        Transaction::create([
-                            'bank_account_id' => $bankAccount->getKey(),
-                            'date' => $payload['date'],
-                            'label' => $payload['label'],
-                            'normalized_label' => $payload['normalized_label'],
-                            'amount' => $payload['amount'],
-                            'type' => $payload['type'],
-                            'balance_after' => $payload['balance_after'],
-                            'beneficiary_detected' => $payload['beneficiary_detected'],
-                            'rule_flags' => $payload['rule_flags'],
-                            'kind' => $payload['kind'],
-                            'origin' => $payload['origin'],
-                            'destination' => $payload['destination'],
-                            'motif' => $payload['motif'],
-                            'cheque_number' => $payload['cheque_number'],
-                            'meta' => $payload['meta'],
-                        ]);
-                        $inserted++;
-                    } catch (\Throwable $e) {
-                        // Unique-key violations mean the transaction already exists
-                        // (e.g. two overlapping statement PDFs). Treat as skipped, not as error.
-                        if (str_contains($e->getMessage(), '23505') || str_contains($e->getMessage(), 'Unique violation') || str_contains($e->getMessage(), 'unique constraint')) {
-                            $inserted++; // count as "handled"
-                        } else {
-                            $insertErrors++;
-                            if ($firstInsertError === null) {
-                                $firstInsertError = substr($e->getMessage(), 0, 300);
+            $distinctSections = collect($transactions)
+                ->map(fn ($t) => (string) ((is_array($t['meta'] ?? null) ? ($t['meta']['account_section'] ?? null) : null) ?? 'joint'))
+                ->filter(fn ($s) => $s !== 'joint')
+                ->unique()
+                ->values();
+
+            foreach ($distinctSections as $section) {
+                $holderLabel = match ($section) {
+                    'savings'  => 'Livret DEV / Épargne',
+                    'personal' => 'Compte personnel',
+                    default    => ucfirst((string) $section),
+                };
+                $sectionAcct = \App\Models\BankAccount::query()
+                    ->where('case_id', $case->getKey())
+                    ->where('account_holder', $holderLabel)
+                    ->first()
+                    ?? \App\Models\BankAccount::create([
+                        'case_id'        => $case->getKey(),
+                        'bank_name'      => $bankAccount->bank_name,
+                        'iban_masked'    => null,
+                        'account_holder' => $holderLabel,
+                    ]);
+                $sectionAccountMap[$section] = $sectionAcct->getKey();
+            }
+            // ── end account section map ─────────────────────────────────────────────
+
+            foreach ($transactions as $tx) {
+                try {
+                    $payload    = $this->normalizeTransactionPayloadForInsert($tx);
+                    $txSection  = (string) ((is_array($payload['meta'] ?? null) ? ($payload['meta']['account_section'] ?? null) : null) ?? 'joint');
+                    $txAccountId = $sectionAccountMap[$txSection] ?? $bankAccount->getKey();
+
+                    // Conservative cheque consolidation across overlapping statements:
+                    // same account + date + type + cheque number = one physical cheque.
+                    // Only use this DB-level consolidation when no explicit cleanup range exists.
+                    if ($allowDbDedupHeuristics && ($payload['kind'] ?? null) === 'cheque' && !empty($payload['cheque_number'])) {
+                        $existingCheque = Transaction::query()
+                            ->where('bank_account_id', $txAccountId)
+                            ->whereDate('date', $payload['date'])
+                            ->where('type', $payload['type'])
+                            ->where('kind', 'cheque')
+                            ->where('cheque_number', $payload['cheque_number'])
+                            ->orderBy('id')
+                            ->first();
+
+                        if ($existingCheque) {
+                            $existingAbs = abs((float) $existingCheque->amount);
+                            $newAbs = abs((float) $payload['amount']);
+
+                            // Keep the most conservative amount when OCR conflicts
+                            // (e.g. 30 000 vs 80 000 for same cheque number/date).
+                            if ($newAbs < $existingAbs) {
+                                $meta = is_array($payload['meta'] ?? null) ? $payload['meta'] : [];
+                                $flags = is_array($meta['quality_flags'] ?? null) ? $meta['quality_flags'] : [];
+                                $flags[] = 'cheque_overlap_consolidated';
+                                $meta['quality_flags'] = array_values(array_unique($flags));
+
+                                $existingCheque->forceFill([
+                                    'label' => $payload['label'],
+                                    'normalized_label' => $payload['normalized_label'],
+                                    'amount' => $payload['amount'],
+                                    'balance_after' => $payload['balance_after'],
+                                    'beneficiary_detected' => $payload['beneficiary_detected'],
+                                    'rule_flags' => $payload['rule_flags'],
+                                    'origin' => $payload['origin'],
+                                    'destination' => $payload['destination'],
+                                    'motif' => $payload['motif'],
+                                    'meta' => $meta,
+                                ])->save();
                             }
+
+                            // In both cases, do not insert a second cheque row.
+                            continue;
                         }
                     }
+
+                    if ($allowDbDedupHeuristics) {
+                        $sameDayDuplicate = $this->findLikelySameDayDuplicate($txAccountId, $payload);
+                        if ($sameDayDuplicate !== null) {
+                            $keepNew = $this->shouldReplaceExistingWithPayload($sameDayDuplicate, $payload);
+
+                            if ($keepNew) {
+                                $sameDayDuplicate->forceFill([
+                                    'date' => $payload['date'],
+                                    'label' => $payload['label'],
+                                    'normalized_label' => $payload['normalized_label'],
+                                    'amount' => $payload['amount'],
+                                    'type' => $payload['type'],
+                                    'balance_after' => $payload['balance_after'],
+                                    'beneficiary_detected' => $payload['beneficiary_detected'],
+                                    'rule_flags' => $payload['rule_flags'],
+                                    'kind' => $payload['kind'],
+                                    'origin' => $payload['origin'],
+                                    'destination' => $payload['destination'],
+                                    'motif' => $payload['motif'],
+                                    'cheque_number' => $payload['cheque_number'],
+                                    'meta' => $payload['meta'],
+                                ])->save();
+                            }
+
+                            $inserted++;
+                            continue;
+                        }
+
+                        $fuzzyDuplicate = $this->findLikelyHighValueDuplicate($txAccountId, $payload);
+                        if ($fuzzyDuplicate !== null) {
+                            $keepNew = $this->shouldReplaceExistingWithPayload($fuzzyDuplicate, $payload);
+
+                            if ($keepNew) {
+                                $fuzzyDuplicate->forceFill([
+                                    'date' => $payload['date'],
+                                    'label' => $payload['label'],
+                                    'normalized_label' => $payload['normalized_label'],
+                                    'amount' => $payload['amount'],
+                                    'type' => $payload['type'],
+                                    'balance_after' => $payload['balance_after'],
+                                    'beneficiary_detected' => $payload['beneficiary_detected'],
+                                    'rule_flags' => $payload['rule_flags'],
+                                    'kind' => $payload['kind'],
+                                    'origin' => $payload['origin'],
+                                    'destination' => $payload['destination'],
+                                    'motif' => $payload['motif'],
+                                    'cheque_number' => $payload['cheque_number'],
+                                    'meta' => $payload['meta'],
+                                ])->save();
+                            }
+
+                            $inserted++;
+                            continue;
+                        }
+                    }
+
+                    Transaction::create([
+                        'bank_account_id' => $txAccountId,
+                        'date' => $payload['date'],
+                        'label' => $payload['label'],
+                        'normalized_label' => $payload['normalized_label'],
+                        'amount' => $payload['amount'],
+                        'type' => $payload['type'],
+                        'balance_after' => $payload['balance_after'],
+                        'beneficiary_detected' => $payload['beneficiary_detected'],
+                        'rule_flags' => $payload['rule_flags'],
+                        'kind' => $payload['kind'],
+                        'origin' => $payload['origin'],
+                        'destination' => $payload['destination'],
+                        'motif' => $payload['motif'],
+                        'cheque_number' => $payload['cheque_number'],
+                        'meta' => $payload['meta'],
+                    ]);
+                    $inserted++;
+                } catch (\Throwable $e) {
+                    // Unique-key violations mean the transaction already exists
+                    // (e.g. two overlapping statement PDFs). Treat as skipped, not as error.
+                    if (str_contains($e->getMessage(), '23505') || str_contains($e->getMessage(), 'Unique violation') || str_contains($e->getMessage(), 'unique constraint')) {
+                        $inserted++; // count as "handled"
+                    } else {
+                        $insertErrors++;
+                        if ($firstInsertError === null) {
+                            $firstInsertError = substr($e->getMessage(), 0, 300);
+                        }
+
+                        $this->recoverDatabaseConnectionAfterInsertError();
+                    }
                 }
-            });
+            }
 
             if ($inserted === 0 && $transactions !== []) {
                 $statement->forceFill([
@@ -292,7 +496,9 @@ class ImportStatementJob implements ShouldQueue
                 'import_error' => $importError,
             ])->save();
 
-            $engine->analyzeCase($case->fresh(['bankAccounts']));
+            if ((bool) config('analytica.import.auto_analyze', false)) {
+                $engine->analyzeCase($case->fresh(['bankAccounts']));
+            }
         } catch (\Throwable $e) {
             $statement->forceFill([
                 'import_status' => 'failed',
@@ -615,6 +821,281 @@ class ImportStatementJob implements ShouldQueue
         ];
     }
 
+    private function findLikelyHighValueDuplicate(int $bankAccountId, array $payload): ?Transaction
+    {
+        $absAmount = abs((float) ($payload['amount'] ?? 0));
+        $threshold = (float) config('analytica.import.high_value_threshold', 20000);
+
+        if ($absAmount < $threshold) {
+            return null;
+        }
+
+        $date = (string) ($payload['date'] ?? '');
+        $type = (string) ($payload['type'] ?? '');
+        $kind = (string) ($payload['kind'] ?? '');
+        $normalizedLabel = (string) ($payload['normalized_label'] ?? '');
+
+        if ($date === '' || $type === '' || $normalizedLabel === '') {
+            return null;
+        }
+
+        $candidates = Transaction::query()
+            ->where('bank_account_id', $bankAccountId)
+            ->where('type', $type)
+            ->where('kind', $kind)
+            ->whereRaw('ABS(amount) = ?', [$absAmount])
+            ->whereDate('date', $date)
+            ->orderByDesc('id')
+            ->get();
+
+        foreach ($candidates as $candidate) {
+            $candidateLabel = (string) ($candidate->normalized_label ?? '');
+            // High-value: date+amount+type already very constraining — use lenient label match
+            if (!$this->labelsLikelySameTransactionForImport($candidateLabel, $normalizedLabel, true)) {
+                continue;
+            }
+
+            return $candidate;
+        }
+
+        return null;
+    }
+
+    private function findLikelySameDayDuplicate(int $bankAccountId, array $payload): ?Transaction
+    {
+        $date = (string) ($payload['date'] ?? '');
+        $type = (string) ($payload['type'] ?? '');
+        $normalizedLabel = (string) ($payload['normalized_label'] ?? '');
+        $label = (string) ($payload['label'] ?? '');
+        $absAmount = abs((float) ($payload['amount'] ?? 0));
+
+        if ($date === '' || $type === '' || $absAmount <= 0 || ($normalizedLabel === '' && $label === '')) {
+            return null;
+        }
+
+        $candidates = Transaction::query()
+            ->where('bank_account_id', $bankAccountId)
+            ->whereDate('date', $date)
+            ->where('type', $type)
+            ->whereRaw('ABS(amount) = ?', [$absAmount])
+            ->orderByDesc('id')
+            ->limit(20)
+            ->get();
+
+        foreach ($candidates as $candidate) {
+            $candidateLabel = (string) ($candidate->normalized_label ?? $candidate->label ?? '');
+            $incomingLabel = $normalizedLabel !== '' ? $normalizedLabel : $label;
+
+            if (!$this->labelsVeryLikelySameTransactionForImport($candidateLabel, $incomingLabel)) {
+                if (!$this->sameDayEvidenceSuggestsOverlap($candidate, $payload)) {
+                    continue;
+                }
+            }
+
+            return $candidate;
+        }
+
+        return null;
+    }
+
+    private function sameDayEvidenceSuggestsOverlap(Transaction $candidate, array $payload): bool
+    {
+        if ($this->sameBalanceAfter($candidate, $payload)) {
+            return true;
+        }
+
+        $candidateStructured = Normalization::normalizeLabel(implode(' ', array_filter([
+            (string) ($candidate->origin ?? ''),
+            (string) ($candidate->destination ?? ''),
+            (string) ($candidate->motif ?? ''),
+            (string) ($candidate->cheque_number ?? ''),
+        ])));
+
+        $payloadStructured = Normalization::normalizeLabel(implode(' ', array_filter([
+            (string) ($payload['origin'] ?? ''),
+            (string) ($payload['destination'] ?? ''),
+            (string) ($payload['motif'] ?? ''),
+            (string) ($payload['cheque_number'] ?? ''),
+        ])));
+
+        if ($candidateStructured !== '' && $payloadStructured !== '') {
+            if ($candidateStructured === $payloadStructured) {
+                return true;
+            }
+
+            if (mb_strlen($candidateStructured) >= 12 && mb_strlen($payloadStructured) >= 12) {
+                $maxLen = max(mb_strlen($candidateStructured), mb_strlen($payloadStructured), 1);
+                $distance = levenshtein(mb_substr($candidateStructured, 0, 255), mb_substr($payloadStructured, 0, 255));
+
+                if (($distance / $maxLen) <= 0.22) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function sameBalanceAfter(Transaction $candidate, array $payload): bool
+    {
+        $existing = $candidate->balance_after;
+        $incoming = $payload['balance_after'] ?? null;
+
+        if ($existing === null || $incoming === null || $incoming === '') {
+            return false;
+        }
+
+        return abs((float) $existing - (float) $incoming) < 0.005;
+    }
+
+    private function shouldReplaceExistingWithPayload(Transaction $existing, array $payload): bool
+    {
+        $existingScore = $this->computeImportReliabilityScore(
+            optional($existing->date)->toDateString(),
+            is_array($existing->meta ?? null) ? $existing->meta : []
+        );
+
+        $payloadScore = $this->computeImportReliabilityScore(
+            (string) ($payload['date'] ?? ''),
+            is_array($payload['meta'] ?? null) ? $payload['meta'] : []
+        );
+
+        if ($payloadScore === $existingScore) {
+            return (string) ($payload['date'] ?? '') >= (string) optional($existing->date)->toDateString();
+        }
+
+        return $payloadScore > $existingScore;
+    }
+
+    private function computeImportReliabilityScore(?string $date, array $meta): int
+    {
+        $score = (int) ($meta['confidence'] ?? 0);
+
+        $flags = is_array($meta['quality_flags'] ?? null) ? $meta['quality_flags'] : [];
+        if (in_array('outside_statement_period', $flags, true)) {
+            $score -= 30;
+        }
+
+        if ($date !== '' && is_array($meta['statement_period'] ?? null)) {
+            $period = $meta['statement_period'];
+            $start = (string) ($period['start'] ?? '');
+            $end = (string) ($period['end'] ?? '');
+
+            if ($start !== '' && $end !== '') {
+                try {
+                    $txDate = Carbon::parse($date);
+                    $windowStart = Carbon::parse($start)->subDays(10);
+                    $windowEnd = Carbon::parse($end)->addDays(10);
+
+                    if ($txDate->between($windowStart, $windowEnd)) {
+                        $score += 20;
+                    } else {
+                        $score -= 20;
+                    }
+                } catch (\Throwable) {
+                    $score -= 10;
+                }
+            }
+        }
+
+        return $score;
+    }
+
+    /**
+     * @param bool $lenient When true (high-value transactions), use a wider similarity tolerance (0.35)
+     *                      because date + exact amount + type already give very high confidence.
+     */
+    private function labelsLikelySameTransactionForImport(string $left, string $right, bool $lenient = false): bool
+    {
+        $leftCanonical = $this->canonicalizeLabelForImportDedup($left);
+        $rightCanonical = $this->canonicalizeLabelForImportDedup($right);
+
+        if ($leftCanonical === '' || $rightCanonical === '') {
+            return false;
+        }
+
+        if ($leftCanonical === $rightCanonical) {
+            return true;
+        }
+
+        $leftLen = mb_strlen($leftCanonical);
+        $rightLen = mb_strlen($rightCanonical);
+        $minLen = min($leftLen, $rightLen);
+
+        if ($minLen >= 18 && (str_contains($leftCanonical, $rightCanonical) || str_contains($rightCanonical, $leftCanonical))) {
+            return true;
+        }
+
+        $maxLen = max($leftLen, $rightLen, 1);
+        $distance = levenshtein(mb_substr($leftCanonical, 0, 255), mb_substr($rightCanonical, 0, 255));
+        $threshold = $lenient ? 0.35 : 0.18;
+
+        return ($distance / $maxLen) <= $threshold;
+    }
+
+    private function labelsVeryLikelySameTransactionForImport(string $left, string $right): bool
+    {
+        $leftRaw = mb_strtoupper(trim($left));
+        $rightRaw = mb_strtoupper(trim($right));
+
+        if ($leftRaw === '' || $rightRaw === '') {
+            return false;
+        }
+
+        if ($leftRaw === $rightRaw) {
+            return true;
+        }
+
+        $leftRawLen = mb_strlen($leftRaw);
+        $rightRawLen = mb_strlen($rightRaw);
+        $rawMinLen = min($leftRawLen, $rightRawLen);
+        if ($rawMinLen >= 18 && (str_contains($leftRaw, $rightRaw) || str_contains($rightRaw, $leftRaw))) {
+            return true;
+        }
+
+        $leftCanonical = $this->canonicalizeLabelForImportDedup($leftRaw);
+        $rightCanonical = $this->canonicalizeLabelForImportDedup($rightRaw);
+
+        if ($leftCanonical === '' || $rightCanonical === '') {
+            return false;
+        }
+
+        if ($leftCanonical === $rightCanonical) {
+            return true;
+        }
+
+        $leftLen = mb_strlen($leftCanonical);
+        $rightLen = mb_strlen($rightCanonical);
+        $minLen = min($leftLen, $rightLen);
+        if ($minLen >= 20 && (str_contains($leftCanonical, $rightCanonical) || str_contains($rightCanonical, $leftCanonical))) {
+            return true;
+        }
+
+        $maxLen = max($leftLen, $rightLen, 1);
+        $distance = levenshtein(mb_substr($leftCanonical, 0, 255), mb_substr($rightCanonical, 0, 255));
+
+        return ($distance / $maxLen) <= 0.35;
+    }
+
+    private function canonicalizeLabelForImportDedup(string $label): string
+    {
+        $normalized = mb_strtoupper(trim($label));
+        // Strip leading day.month prefix (e.g. "16.02 " or "16 02 ")
+        $normalized = preg_replace('/^\d{1,2}[.\s]\d{2}\s+/u', '', $normalized) ?? $normalized;
+        // Strip date range patterns: DU xx MONTH ER? AU xx MONTH ER? (OCR artefacts)
+        $normalized = preg_replace('/\bDU\s+\d{1,2}\s+\w+\s*(ER)?\s+\d{0,4}\s+AU\s+\d{1,2}\s+\w+\s*(ER)?\s+\d{0,4}\b/u', ' ', $normalized) ?? $normalized;
+        // Strip town / person suffix after GARDANNE
+        $normalized = preg_replace('/\bGARDANNE\b.*/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\bBNP\s+PARIBAS\s+SA\b.*$/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\b(?:RCS|ORIAS|SIEGE|SI[EÈ]GE|SERVICE\s+CLIENT|MONNAIE\s+DU\s+COMPTE)\b.*$/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\b(?:REF|REFDO|REFBEN|EMETTEUR|EMETTEUR\/|MDT|IBAN|BIC|RIB|LIB|MOT|MOTIF)\b[^\n]*/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\b[A-Z0-9]{10,}\b/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\b\d+\b/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\s+/u', ' ', $normalized) ?? $normalized;
+
+        return trim($normalized);
+    }
+
     /**
      * @param array<int, array<string,mixed>> $transactions
      * @return array{start:string,end:string}|null
@@ -692,5 +1173,21 @@ class ImportStatementJob implements ShouldQueue
         }
 
         return mb_substr($clean, 0, $max);
+    }
+
+    private function recoverDatabaseConnectionAfterInsertError(): void
+    {
+        try {
+            while (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+        } catch (\Throwable) {
+        }
+
+        try {
+            DB::disconnect();
+            DB::reconnect();
+        } catch (\Throwable) {
+        }
     }
 }

@@ -70,6 +70,10 @@ class StatementImportService
                 'balance_after' => $balanceAfter,
                 'beneficiary_detected' => $normalized !== '',
                 'rule_flags' => [],
+                'meta' => [
+                    'source_kind' => 'csv',
+                    'source_line' => (string) $lines[$i],
+                ],
                 ...$structured,
             ];
         }
@@ -104,6 +108,8 @@ class StatementImportService
                 continue;
             }
 
+            $type = $this->applySemanticTypeCorrections($label, $type);
+
             $type = $type === 'debit' ? 'debit' : 'credit';
             $amount = $this->enforceAmountSignByType($amount, $type);
 
@@ -127,22 +133,54 @@ class StatementImportService
             return strcmp((string) ($a['date'] ?? ''), (string) ($b['date'] ?? ''));
         });
 
-        $unique = [];
-        $seen = [];
+        $bucketed = [];
 
         foreach ($prepared as $tx) {
-            $fingerprint = implode('|', [
+            $bucketKey = implode('|', [
                 (string) ($tx['date'] ?? ''),
                 (string) ($tx['type'] ?? ''),
                 (string) ($tx['amount'] ?? ''),
-                (string) ($tx['normalized_label'] ?? ''),
             ]);
 
-            if (isset($seen[$fingerprint])) {
+            if (!isset($bucketed[$bucketKey])) {
+                $bucketed[$bucketKey] = [$tx];
                 continue;
             }
 
-            $seen[$fingerprint] = true;
+            $merged = false;
+            foreach ($bucketed[$bucketKey] as $index => $existing) {
+                $existingLabel = (string) ($existing['normalized_label'] ?? '');
+                $candidateLabel = (string) ($tx['normalized_label'] ?? '');
+
+                if (!$this->labelsLikelySameTransaction($existingLabel, $candidateLabel)) {
+                    continue;
+                }
+
+                $existingScore = (int) (($existing['meta']['confidence'] ?? 0));
+                $candidateScore = (int) (($tx['meta']['confidence'] ?? 0));
+
+                if ($candidateScore > $existingScore) {
+                    $bucketed[$bucketKey][$index] = $tx;
+                }
+
+                $merged = true;
+                break;
+            }
+
+            if (!$merged) {
+                $bucketed[$bucketKey][] = $tx;
+            }
+        }
+
+        $unique = [];
+        foreach ($bucketed as $rows) {
+            foreach ($rows as $tx) {
+                $unique[] = $tx;
+            }
+        }
+
+        $filtered = [];
+        foreach ($unique as $tx) {
 
             $score = (int) (($tx['meta']['confidence'] ?? 0));
             $amountAbs = abs((float) ($tx['amount'] ?? 0));
@@ -160,10 +198,129 @@ class StatementImportService
                 $tx['meta'] = $meta;
             }
 
-            $unique[] = $tx;
+            $filtered[] = $tx;
         }
 
-        return $unique;
+        return $this->resolveChequeAmountConflicts($filtered);
+    }
+
+    private function labelsLikelySameTransaction(string $left, string $right): bool
+    {
+        $leftCanonical = $this->canonicalizeLabelForDedup($left);
+        $rightCanonical = $this->canonicalizeLabelForDedup($right);
+
+        if ($leftCanonical === '' || $rightCanonical === '') {
+            return false;
+        }
+
+        if ($leftCanonical === $rightCanonical) {
+            return true;
+        }
+
+        $leftLen = mb_strlen($leftCanonical);
+        $rightLen = mb_strlen($rightCanonical);
+        $minLen = min($leftLen, $rightLen);
+
+        if ($minLen >= 16 && (str_contains($leftCanonical, $rightCanonical) || str_contains($rightCanonical, $leftCanonical))) {
+            return true;
+        }
+
+        $maxLen = max($leftLen, $rightLen, 1);
+        $distance = levenshtein(mb_substr($leftCanonical, 0, 255), mb_substr($rightCanonical, 0, 255));
+
+        return ($distance / $maxLen) <= 0.22;
+    }
+
+    private function canonicalizeLabelForDedup(string $label): string
+    {
+        $normalized = mb_strtoupper(Normalization::cleanLabel($label));
+
+        $normalized = preg_replace('/\bBNP\s+PARIBAS\s+SA\b.*$/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\b(?:REF|REFDO|REFBEN|EMETTEUR|EMETTEUR\/|EMETTEUR\b|MDT|IBAN|BIC|RIB|LIB)\b[^\n]*/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\b[A-Z0-9]{10,}\b/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\b\d+\b/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\s+/u', ' ', $normalized) ?? $normalized;
+
+        return trim($normalized);
+    }
+
+    /**
+     * Resolve OCR conflicts where the same cheque number/date appears with multiple amounts.
+     *
+     * A physical cheque cannot carry two different amounts on the same date.
+     * When OCR duplicates produce conflicting values (e.g. 30 000 vs 80 000),
+     * keep the most conservative amount (smallest absolute value) and flag it.
+     *
+     * @param  array<int, array<string,mixed>>  $transactions
+     * @return array<int, array<string,mixed>>
+     */
+    private function resolveChequeAmountConflicts(array $transactions): array
+    {
+        $byCheque = [];
+        $kept = [];
+
+        foreach ($transactions as $tx) {
+            $kind = (string) ($tx['kind'] ?? '');
+            $chequeNumber = trim((string) ($tx['cheque_number'] ?? ''));
+            $date = (string) ($tx['date'] ?? '');
+            $type = (string) ($tx['type'] ?? '');
+
+            if ($kind !== 'cheque' || $chequeNumber === '' || $date === '' || $type === '') {
+                $kept[] = $tx;
+                continue;
+            }
+
+            $key = implode('|', [$date, $type, $chequeNumber]);
+            $currentAbs = abs((float) ($tx['amount'] ?? 0));
+
+            if (!isset($byCheque[$key])) {
+                $tx = $this->appendQualityFlag($tx, 'cheque_unique_candidate');
+                $byCheque[$key] = [
+                    'tx' => $tx,
+                    'abs' => $currentAbs,
+                ];
+                continue;
+            }
+
+            $existing = $byCheque[$key];
+            $existingAbs = (float) ($existing['abs'] ?? 0);
+
+            // Keep the smallest absolute amount for same cheque/date/type.
+            if ($currentAbs < $existingAbs) {
+                $tx = $this->appendQualityFlag($tx, 'cheque_amount_conflict_resolved');
+                $byCheque[$key] = [
+                    'tx' => $tx,
+                    'abs' => $currentAbs,
+                ];
+            } else {
+                $byCheque[$key]['tx'] = $this->appendQualityFlag((array) $byCheque[$key]['tx'], 'cheque_amount_conflict_resolved');
+            }
+        }
+
+        foreach ($byCheque as $row) {
+            $kept[] = (array) ($row['tx'] ?? []);
+        }
+
+        usort($kept, function ($a, $b) {
+            return strcmp((string) ($a['date'] ?? ''), (string) ($b['date'] ?? ''));
+        });
+
+        return $kept;
+    }
+
+    /**
+     * @param array<string,mixed> $tx
+     * @return array<string,mixed>
+     */
+    private function appendQualityFlag(array $tx, string $flag): array
+    {
+        $meta = is_array($tx['meta'] ?? null) ? $tx['meta'] : [];
+        $flags = is_array($meta['quality_flags'] ?? null) ? $meta['quality_flags'] : [];
+        $flags[] = $flag;
+        $meta['quality_flags'] = array_values(array_unique($flags));
+        $tx['meta'] = $meta;
+
+        return $tx;
     }
 
     /**
@@ -286,6 +443,10 @@ class StatementImportService
                 'balance_after' => null,
                 'beneficiary_detected' => $normalized !== '',
                 'rule_flags' => [],
+                'meta' => [
+                    'source_kind' => 'text_line',
+                    'source_line' => $line,
+                ],
                 ...$structured,
             ];
         }
@@ -339,11 +500,18 @@ class StatementImportService
 
         $out = [];
         $seen = [];
+        $rollingYear = $defaultYear;
 
         foreach ($blocks as $blockLines) {
-            $date = $this->extractBnpDateFromBlock($blockLines, $defaultYear, $period);
+            $date = $this->extractBnpDateFromBlock($blockLines, $defaultYear, $period, $rollingYear);
             if ($date === null) {
                 continue;
+            }
+
+            // Update rolling year for subsequent bare DD.MM dates.
+            $txYear = (int) substr($date, 0, 4);
+            if ($txYear >= 2015 && $txYear <= (int) date('Y')) {
+                $rollingYear = $txYear;
             }
 
             $amountData = $this->extractBnpAmountFromBlock($blockLines);
@@ -379,6 +547,11 @@ class StatementImportService
                 'balance_after' => null,
                 'beneficiary_detected' => $normalized !== '',
                 'rule_flags' => [],
+                'meta' => [
+                    'source_kind' => 'ocr_block',
+                    'source_line' => (string) ($blockLines[0] ?? ''),
+                    'source_block_lines' => $blockLines,
+                ],
                 ...$structured,
             ];
 
@@ -394,7 +567,7 @@ class StatementImportService
         return $out;
     }
 
-    private function isLikelyBnp(string $text): bool
+    public function isLikelyBnp(string $text): bool
     {
         $t = mb_strtoupper($text);
 
@@ -420,6 +593,12 @@ class StatementImportService
         $blocks = [];
         $currentBlock = [];
         $currentContext = null;
+        // Account section tracking: 'joint' = compte commun M. ou Mme,
+        // 'personal' = compte individuel M. seul, 'savings' = livret.
+        // Detected from BNP page-header lines before noise filtering.
+        $currentSection   = 'joint'; // default
+        $pendingDetect    = 0;       // lines left to scan for 'M OU MME' after a RELEVE header
+        $lastSectionBlock = -1;      // index of last block when section changed (for rollingYear reset)
 
         foreach ($lines as $rawLine) {
             $line = Normalization::cleanLabel((string) $rawLine);
@@ -428,6 +607,35 @@ class StatementImportService
             }
 
             $upper = mb_strtoupper($line);
+
+            // ── Account section detection (before noise/metadata filtering) ────────
+            // BNP PDFs contain multiple account sections separated by header blocks.
+            // We intercept the header lines to tag subsequent transactions.
+            if (preg_match('/RELEVE\s+LIVRET|RELEVÉ\s+LIVRET/u', $upper)) {
+                if ($currentBlock !== []) {
+                    $blocks[] = ['context' => $currentContext, 'lines' => $currentBlock, 'account_section' => $currentSection];
+                    $currentBlock = [];
+                    $lastSectionBlock = count($blocks);
+                }
+                $currentSection = 'savings';
+                $pendingDetect  = 0;
+            } elseif (preg_match('/BNP\s*PARIBAS\s+RELEVE\s+DE\s+COMPTE|RELEVE\s+DE\s+COMPTE\s+CH[EÈ]QUES|RELEVÉ\s+DE\s+COMPTE\s+CH[EÈ]QUES|BNP\s*PARIBAS\s+RELEVÉ\s+DE\s+COMPTE/u', $upper)) {
+                if ($currentBlock !== []) {
+                    $blocks[] = ['context' => $currentContext, 'lines' => $currentBlock, 'account_section' => $currentSection];
+                    $currentBlock = [];
+                    $lastSectionBlock = count($blocks);
+                }
+                $currentSection = 'personal'; // presumed personal until M OU MME found
+                $pendingDetect  = 20;          // scan next 20 non-empty lines (cover multi-line BNP headers)
+            } elseif ($pendingDetect > 0) {
+                $pendingDetect--;
+                // Joint account holder contains 'M OU MME' / 'M OÙ MME' / 'M. OU MME' / 'M ET MME'
+                if (preg_match('/\bM\s+O[U\x{00D9}]\s+MM[E\x{00C8}\x{00C9}]?\b|\bM\.\s*O[U\x{00D9}]\s+MM[E\x{00C8}\x{00C9}]?\b|\bM\s+ET\s+MM[E\x{00C8}\x{00C9}]?\b/u', $upper)) {
+                    $currentSection = 'joint';
+                    $pendingDetect  = 0;
+                }
+            }
+            // ── end section detection ─────────────────────────────────────────────
 
             if ($this->isBnpNoiseLine($upper)) {
                 continue;
@@ -445,8 +653,9 @@ class StatementImportService
             if ($this->isBnpTransactionAnchor($line, $upper)) {
                 if ($currentBlock !== []) {
                     $blocks[] = [
-                        'context' => $currentContext,
-                        'lines' => $currentBlock,
+                        'context'         => $currentContext,
+                        'lines'           => $currentBlock,
+                        'account_section' => $currentSection,
                     ];
                 }
 
@@ -461,26 +670,80 @@ class StatementImportService
 
         if ($currentBlock !== []) {
             $blocks[] = [
-                'context' => $currentContext,
-                'lines' => $currentBlock,
+                'context'         => $currentContext,
+                'lines'           => $currentBlock,
+                'account_section' => $currentSection,
             ];
         }
 
         $out = [];
-        $seen = [];
+        $seen = [];           // exact fingerprint → true
+        $seenDateAmt = [];    // "date|amount" → [normalized_label, …]  (fuzzy dedupe)
+
+        // Rolling year: tracks the most recently confirmed calendar year from DDMMYY
+        // patterns. Propagated to blocks that only have bare DD.MM anchor dates.
+        // This is critical for multi-year combined statements where the global
+        // $defaultYear (from the first page's period header) may be wrong.
+        $rollingYear     = $defaultYear;
+        $prevSection     = null; // track section changes to reset rollingYear
 
         foreach ($blocks as $block) {
-            $tx = $this->buildBnpTransactionFromBlock($block['lines'], $defaultYear, $block['context'], $period);
+            $blockSection = (string) ($block['account_section'] ?? 'joint');
+            // Reset rolling year when switching account sections to prevent year-bleed
+            // (e.g. joint account years leaking into personal account section).
+            if ($prevSection !== null && $prevSection !== $blockSection) {
+                $rollingYear = $defaultYear;
+            }
+            $prevSection = $blockSection;
+
+            $tx = $this->buildBnpTransactionFromBlock($block['lines'], $defaultYear, $block['context'], $period, $rollingYear, $blockSection);
             if ($tx === null) {
                 continue;
             }
 
+            // Update rolling year from the successfully parsed transaction date.
+            $txYear = (int) substr((string) ($tx['date'] ?? ''), 0, 4);
+            if ($txYear >= 2015 && $txYear <= (int) date('Y')) {
+                $rollingYear = $txYear;
+            }
+
+            // ── Pass 1: exact fingerprint ──────────────────────────────────
             $fingerprint = $tx['date'].'|'.$tx['amount'].'|'.$tx['normalized_label'];
             if (isset($seen[$fingerprint])) {
                 continue;
             }
 
-            $seen[$fingerprint] = true;
+            // ── Pass 2: fuzzy label dedup (catches OCR variants of same tx) ─
+            // Two transactions with identical date + amount whose normalized
+            // labels differ only by OCR noise (e.g. "MAISON" vs "MASON",
+            // "/REFDO …" present or absent) are treated as duplicates.
+            // We keep the first-seen copy (usually higher OCR confidence).
+            $dateAmtKey = $tx['date'].'|'.$tx['amount'];
+            $newLabel   = mb_strtolower((string) ($tx['normalized_label'] ?? ''));
+            $isDupe     = false;
+
+            if (isset($seenDateAmt[$dateAmtKey])) {
+                foreach ($seenDateAmt[$dateAmtKey] as $existingLabel) {
+                    $maxLen = max(mb_strlen($existingLabel), mb_strlen($newLabel), 1);
+                    // levenshtein() only handles up to 255 bytes; truncate safely.
+                    $dist = levenshtein(
+                        mb_substr($existingLabel, 0, 255),
+                        mb_substr($newLabel, 0, 255)
+                    );
+                    // Similarity threshold: ≤ 25 % edit distance = same transaction.
+                    if (($dist / $maxLen) <= 0.25) {
+                        $isDupe = true;
+                        break;
+                    }
+                }
+            }
+
+            if ($isDupe) {
+                continue;
+            }
+
+            $seen[$fingerprint]           = true;
+            $seenDateAmt[$dateAmtKey][]   = $newLabel;
             $out[] = $tx;
         }
 
@@ -587,13 +850,13 @@ class StatementImportService
      * @param array<int, string> $blockLines
      * @return array{date:string,label:string,normalized_label:string,amount:string,type:string,balance_after:?string,beneficiary_detected:bool,rule_flags:array,kind:?string,origin:?string,destination:?string,motif:?string,cheque_number:?string,meta:array}|null
      */
-    private function buildBnpTransactionFromBlock(array $blockLines, ?int $defaultYear, ?string $context, ?array $period = null): ?array
+    private function buildBnpTransactionFromBlock(array $blockLines, ?int $defaultYear, ?string $context, ?array $period = null, ?int $rollingYear = null, string $accountSection = 'joint'): ?array
     {
         if ($blockLines === []) {
             return null;
         }
 
-        $date = $this->extractBnpDateFromBlock($blockLines, $defaultYear, $period);
+        $date = $this->extractBnpDateFromBlock($blockLines, $defaultYear, $period, $rollingYear);
         if ($date === null) {
             return null;
         }
@@ -628,81 +891,180 @@ class StatementImportService
         $normalized = Normalization::normalizeLabel($label);
         $structured = $this->extractStructuredFields($label, $type);
 
+        // Merge the structured meta (reference, kind_inferred, etc.) with the block-level
+        // meta (source_kind, account_section, etc.). The block meta takes precedence so that
+        // account_section is never overwritten by the spread operator.
+        $blockMeta = [
+            'source_kind'        => 'ocr_block',
+            'source_line'        => (string) ($blockLines[0] ?? ''),
+            'source_block_lines' => $blockLines,
+            'account_section'    => $accountSection,
+        ];
+
         return [
-            'date' => $date,
-            'label' => $label,
-            'normalized_label' => $normalized,
-            'amount' => $signedAmount,
-            'type' => $type,
-            'balance_after' => null,
+            'date'                => $date,
+            'label'               => $label,
+            'normalized_label'    => $normalized,
+            'amount'              => $signedAmount,
+            'type'                => $type,
+            'balance_after'       => null,
             'beneficiary_detected' => $normalized !== '',
-            'rule_flags' => [],
-            ...$structured,
+            'rule_flags'          => [],
+            'meta'                => array_merge($structured['meta'] ?? [], $blockMeta),
+            'kind'                => $structured['kind'] ?? null,
+            'origin'              => $structured['origin'] ?? null,
+            'destination'         => $structured['destination'] ?? null,
+            'motif'               => $structured['motif'] ?? null,
+            'cheque_number'       => $structured['cheque_number'] ?? null,
         ];
     }
 
     /**
      * @param array<int, string> $blockLines
+     * @param int|null $rollingYear The most recently confirmed year from prior blocks (multi-period docs).
      */
-    private function extractBnpDateFromBlock(array $blockLines, ?int $defaultYear, ?array $period = null): ?string
+    private function extractBnpDateFromBlock(array $blockLines, ?int $defaultYear, ?array $period = null, ?int $rollingYear = null): ?string
     {
-        $anchor = $blockLines[0] ?? '';
+        $anchor      = $blockLines[0] ?? '';
+        $anchorUpper = mb_strtoupper($anchor);
+        $localPeriod = $this->extractStatementPeriod(implode("\n", $blockLines));
+        $effectivePeriod = $localPeriod ?? $period;
 
-        if (preg_match('/^(\d{2}[\/\-.]\d{2}(?:[\/\-.]\d{2,4})?)\b/', $anchor, $m)) {
-            $parsed = $this->parseDateWithPeriod($m[1], $defaultYear, $period);
+        // ── Pre-scan: find a DDMMYY pattern anywhere in the block ────────────────
+        // "DU DDMMYY" / "ECH/DDMMYY" carry an explicit 2-digit year validated by
+        // parseDdmmyyDate. When found, this $blockYear overrides the (possibly
+        // wrong) $defaultYear coming from the first-page period header — critical
+        // for multi-year combined statements (e.g. 211-page, 2020–2025).
+        $blockYear = null;
+        foreach ($blockLines as $bline) {
+            $bupper = mb_strtoupper($bline);
+            if (preg_match('/\bDU\s*([0-3]\d)([01]\d)(\d{2})\b/u', $bupper, $bm)
+                || preg_match('/\bECH\/([0-3]\d)([01]\d)(\d{2})\b/u', $bupper, $bm)) {
+                $fy = 2000 + (int) $bm[3];
+                // Accept years 2015–currentYear+1 (reject OCR-corrupted far-future years).
+                if ($fy >= 2015 && $fy <= (int) date('Y') + 1) {
+                    $blockYear = $fy;
+                    break;
+                }
+            }
+        }
+
+        // Effective year preference: blockYear > rollingYear > defaultYear.
+        $effectiveYear = $blockYear ?? $rollingYear ?? $defaultYear;
+
+        // ── Priority 1: full date already containing a 4-digit year on anchor ───
+        if (preg_match('/^(\d{2}[\/\-.]\d{2}[\/\-.]\d{2,4})\b/', $anchor, $m)) {
+            $parsed = $this->parseDateWithPeriod($m[1], $effectiveYear, $effectivePeriod);
             if ($parsed !== null) {
                 return $parsed;
             }
         }
 
-        // OCR artifact: "1002 | ..." where 10.02 lost its dot separator.
+        // ── Priority 2: bare DD.MM on anchor, year from blockYear/rollingYear ───
+        //
+        // KEY RULE for multi-year combined PDFs:
+        //  — blockYear (explicit DDMMYY found in this block): trusted directly.
+        //  — localPeriod ("du X au Y" found INSIDE this block): used for year-boundary
+        //    disambiguation (e.g. Dec→Jan crossing within the same page).
+        //  — rollingYear (propagated from prior blocks): trusted directly.
+        //    Do NOT pass it through parseDateWithPeriod with the GLOBAL period: that
+        //    period comes from the FIRST page of the document and is stale for pages
+        //    2–N. A 2021 rollingYear through period{2020-12} silently returns 2020-MM-DD.
+        //  — Global effectivePeriod: only used as last resort when no year context exists.
+        if (preg_match('/^(\d{2})[\/\-.](\d{2})\b/u', $anchor, $m)) {
+            $day   = (int) $m[1];
+            $month = (int) $m[2];
+            if ($day >= 1 && $day <= 31 && $month >= 1 && $month <= 12) {
+                $ddmm = sprintf('%02d.%02d', $day, $month);
+
+                // 2a. blockYear: explicit DDMMYY in this block — highest trust.
+                if ($blockYear !== null) {
+                    $candidate = sprintf('%04d-%02d-%02d', $blockYear, $month, $day);
+                    try { \Carbon\Carbon::parse($candidate); return $candidate; } catch (\Throwable) {}
+                }
+
+                // 2b. localPeriod (block's own "du X au Y") — correct for year-boundary pages.
+                if ($localPeriod !== null) {
+                    $parsed = $this->parseDateWithPeriod($ddmm, $effectiveYear, $localPeriod);
+                    if ($parsed !== null) {
+                        return $parsed;
+                    }
+                }
+
+                // 2c. rollingYear: direct construction — do NOT use stale global period here.
+                if ($rollingYear !== null) {
+                    $candidate = sprintf('%04d-%02d-%02d', $rollingYear, $month, $day);
+                    try { \Carbon\Carbon::parse($candidate); return $candidate; } catch (\Throwable) {}
+                }
+
+                // 2d. effectiveYear (= defaultYear from first-page): direct construction.
+                if ($effectiveYear !== null) {
+                    $candidate = sprintf('%04d-%02d-%02d', $effectiveYear, $month, $day);
+                    try {
+                        \Carbon\Carbon::parse($candidate);
+                        return $candidate;
+                    } catch (\Throwable) {
+                        // invalid calendar date (e.g. 31 April) — fall through
+                    }
+                }
+
+                // 2e. No year context — last resort, global period-aware resolution.
+                $parsed = $this->parseDateWithPeriod($ddmm, $defaultYear, $effectivePeriod);
+                if ($parsed !== null) {
+                    return $parsed;
+                }
+            }
+        }
+        // ── Priority 3: OCR artifact "1002 | ..." where 10.02 lost its dot ─────
         if (preg_match('/^(\d{2})(\d{2})\s*[|!:]/u', $anchor, $m)) {
-            $parsed = $this->parseDateWithPeriod($m[1].'.'.$m[2], $defaultYear, $period);
+            $parsed = $this->parseDateWithPeriod($m[1].'.'.$m[2], $effectiveYear, $effectivePeriod);
             if ($parsed !== null) {
                 return $parsed;
             }
         }
 
-        if (preg_match('/\bDU\s*([0-3]\d)([01]\d)(\d{2})\b/u', mb_strtoupper($anchor), $m)) {
-            $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $defaultYear, $period);
+        // ── Priority 4: DDMMYY directly on anchor line ───────────────────────
+        if (preg_match('/\bDU\s*([0-3]\d)([01]\d)(\d{2})\b/u', $anchorUpper, $m)) {
+            $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $effectiveYear, $effectivePeriod);
             if ($parsed !== null) {
                 return $parsed;
             }
         }
 
-        if (preg_match('/\bECH\/([0-3]\d)([01]\d)(\d{2})\b/u', mb_strtoupper($anchor), $m)) {
-            $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $defaultYear, $period);
+        if (preg_match('/\bECH\/([0-3]\d)([01]\d)(\d{2})\b/u', $anchorUpper, $m)) {
+            $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $effectiveYear, $effectivePeriod);
             if ($parsed !== null) {
                 return $parsed;
             }
         }
 
+        // ── Priority 5: scan continuation lines ──────────────────────────────
         foreach ($blockLines as $line) {
             $upper = mb_strtoupper($line);
 
             if (preg_match('/\bDU\s*([0-3]\d)([01]\d)(\d{2})\b/u', $upper, $m)) {
-                $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $defaultYear, $period);
+                $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $effectiveYear, $effectivePeriod);
                 if ($parsed !== null) {
                     return $parsed;
                 }
             }
 
             if (preg_match('/\bECH\/([0-3]\d)([01]\d)(\d{2})\b/u', $upper, $m)) {
-                $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $defaultYear, $period);
+                $parsed = $this->parseDdmmyyDate($m[1], $m[2], $m[3], $effectiveYear, $effectivePeriod);
                 if ($parsed !== null) {
                     return $parsed;
                 }
             }
 
             if (preg_match('/\b(\d{2}[\/\-.]\d{2}[\/\-.]\d{2,4})\b/', $line, $m)) {
-                $parsed = $this->parseDateWithPeriod($m[1], $defaultYear, $period);
+                $parsed = $this->parseDateWithPeriod($m[1], $effectiveYear, $effectivePeriod);
                 if ($parsed !== null) {
                     return $parsed;
                 }
             }
 
             if (preg_match('/\b(\d{2}[\/\-.]\d{2})\b/', $line, $m)) {
-                $parsed = $this->parseDateWithPeriod($m[1], $defaultYear, $period);
+                $parsed = $this->parseDateWithPeriod($m[1], $effectiveYear, $effectivePeriod);
                 if ($parsed !== null) {
                     return $parsed;
                 }
@@ -745,25 +1107,42 @@ class StatementImportService
         $startDate = $period['start'];
         $endDate   = $period['end'];
 
-        // Build candidate dates for every year in the period range (usually 1 or 2 years).
-        $bestDate = null;
-        $bestDelta = PHP_INT_MAX;
+        // Build candidate years: period range + $defaultYear if outside range.
+        // This ensures that when a confirmed rollingYear (passed as $defaultYear) differs
+        // from the (potentially stale) period range, it is still evaluated as a candidate.
+        $yearsToTry = range($startYear, $endYear);
+        if ($defaultYear !== null && !in_array($defaultYear, $yearsToTry, true)) {
+            $yearsToTry[] = $defaultYear;
+        }
 
-        for ($y = $startYear; $y <= $endYear; $y++) {
+        $bestDate     = null;
+        $bestDelta    = PHP_INT_MAX;
+        $bestInWindow = null; // best candidate inside the statement window
+
+        foreach ($yearsToTry as $y) {
             $candidate = sprintf('%04d-%02d-%02d', $y, $month, $day);
             try {
-                $dt = Carbon::parse($candidate);
-                // Score by distance from the statement window.
+                $dt      = Carbon::parse($candidate);
                 $startTs = Carbon::parse($startDate)->timestamp;
                 $endTs   = Carbon::parse($endDate)->timestamp;
                 $ts      = $dt->timestamp;
 
                 if ($ts >= $startTs && $ts <= $endTs) {
                     // Perfect: inside the statement window.
-                    return $candidate;
+                    // Prefer defaultYear when tie (deterministic).
+                    if ($bestInWindow === null || $y === $defaultYear) {
+                        $bestInWindow = $candidate;
+                    }
+                    continue;
                 }
 
                 $delta = min(abs($ts - $startTs), abs($ts - $endTs));
+                // Strong bias for defaultYear/rollingYear: 90 % discount on distance.
+                // This prevents a stale global period (e.g. 2020-12) from beating a
+                // confirmed rolling year (e.g. 2021) when neither falls in the window.
+                if ($y === $defaultYear) {
+                    $delta = (int) ($delta * 0.1);
+                }
                 if ($delta < $bestDelta) {
                     $bestDelta = $delta;
                     $bestDate  = $candidate;
@@ -773,8 +1152,8 @@ class StatementImportService
             }
         }
 
-        // If no year in the period range matched, fall back to default year.
-        return $bestDate ?? $this->parseDate($raw, $defaultYear);
+        // A date inside the statement window wins over the proximity fallback.
+        return $bestInWindow ?? $bestDate ?? $this->parseDate($raw, $defaultYear);
     }
 
     /**
@@ -1021,9 +1400,43 @@ class StatementImportService
     private function inferBnpType(string $label, string $amount): string
     {
         $upper = mb_strtoupper($label);
+        $normalized = Normalization::normalizeLabel($label);
 
-        if (preg_match('/\b(VER\s+SEPA\s+RECU|VIR\s+SEPA\s+RECU|RECU\b|REÇU\b|REMBOURST)\b/u', $upper)) {
+        if (preg_match('/\b(RETRAIT\s+DAB|RETRAIT|DAB|ATM)\b/u', $normalized)) {
+            return 'debit';
+        }
+
+        // ── DEBIT keywords (priority) ───────────────────────────────────────
+        // Outgoing transfer markers are often OCR-corrupted:
+        // EMIS / EM:S / EM S / EMS / EMSS / EMES / EMFS + VIREMENT/VREMENT/VER/SCT.
+        $hasTransferContext = preg_match('/\b(VIR(?:EMENT)?|VIREMENT|VREMENT|VER|SCT)\b/u', $normalized) === 1
+            || preg_match('/\b(?:CPTE\s+A\s+CPTE|COMPTE\s+A\s+COMPTE)\b/u', $normalized) === 1;
+
+        $hasOutgoingMarker = preg_match('/\b(EM\s*S|EMI\s*S|EMIS|EMS|EMSS|EMES|EMFS)\b/u', $normalized) === 1;
+
+        if ($hasTransferContext && $hasOutgoingMarker) {
+            return 'debit';
+        }
+
+        // ── CREDIT keywords ──────────────────────────────────────────────────
+        // VIR SEPA RECU / VER SEPA RECU (incoming SEPA wire), REMBOURST (refund).
+        if (preg_match('/\b(VER\s+SEPA\s+RECU|VER\s+SEPA\s+RE[CÇ]U|VIR\s+SEPA\s+RECU|VIR\s+SEPA\s+RE[CÇ]U|RECU\b|REÇU\b|REMBOURST)\b/u', $upper)) {
             return 'credit';
+        }
+
+        // ── DEBIT keywords ───────────────────────────────────────────────────
+        // "EMIS" = outgoing SEPA Credit Transfer. OCR frequently corrupts it:
+        //   EMIS → EMSS (I→S)  |  EMIS → EMS (I dropped)  |  EMIS → EMlS (I→l)
+        // Keep this legacy matcher as fallback.
+        if (preg_match(
+            '/\b(?:VIR(?:EMENT)?|VER)\s+SEPA\s+EM[ISl][ISl]?S?\b'
+            .'|'
+            .'\bSCT\s+(?:INST\s+)?EM[ISl][ISl]?S?\b'
+            .'|'
+            .'\bEM[ISl][ISl]?S?\s+SEPA\b/u',
+            $upper
+        )) {
+            return 'debit';
         }
 
         if (preg_match('/\b(PRLV|FACTURE|CHEQUE|CH[ÉE]QUE|RETRAIT|ECHEANCE|ÉCHÉANCE|COMMISSIONS)\b/u', $upper)) {
@@ -1383,20 +1796,42 @@ class StatementImportService
             if (preg_match('/\bN\s*[°O]?\s*(\d{4,10})\b/', $norm, $m) || preg_match('/\bCHEQUE\s+(\d{4,10})\b/', $norm, $m)) {
                 $chequeNumber = $m[1];
             }
-        } elseif (preg_match('/\b(RETRAIT|DAB|ATM)\b/', $norm)) {
+        } elseif (preg_match('/\b(RETRAIT\s+DAB|RETRAIT|DAB|ATM)\b/', $norm)) {
+            $kind = 'cash_withdrawal';
+        } elseif (preg_match('/\b(REMISE\s+ESPECES|VERSEMENT\s+ESPECES|DEPOT\s+ESPECES|DEPOT\s+DAB)\b/u', $norm)) {
             $kind = 'cash_withdrawal';
         } elseif (preg_match('/\b(VIREMENT|VIR\b|SEPA)\b/', $norm)) {
             $kind = 'transfer';
 
-            // Very simple origin/destination heuristics.
-            if ($type === 'credit' && preg_match('/\bDE\s+(.+)$/u', $label, $m)) {
-                $origin = Normalization::cleanLabel($m[1]);
+            $reference = $this->extractTransferReference($label);
+            if ($reference !== null) {
+                $meta = ['reference' => $reference];
+            } else {
+                $meta = [];
             }
-            if ($type === 'debit' && preg_match('/\bVERS\s+(.+)$/u', $label, $m)) {
-                $destination = Normalization::cleanLabel($m[1]);
+
+            $motifCandidate = $this->extractTransferMotif($label);
+            if ($motifCandidate !== null) {
+                $motif = $motifCandidate;
             }
+
+            if ($type === 'credit') {
+                $origin = $this->extractTransferOrigin($label) ?? $this->extractTransferCounterparty($label, 'DE');
+            }
+
+            if ($type === 'debit') {
+                $destination = $this->extractTransferDestination($label) ?? $this->extractTransferCounterparty($label, 'BEN');
+            }
+        } elseif (preg_match('/\b(CARTE|CB\b|PAIEMENT\s+CARTE|FACTURE\(S\)\s+CARTE|TPE)\b/u', $norm)) {
+            $kind = 'card';
+            $meta = [];
         } else {
-            $kind = 'other';
+            $kind = $type === 'credit' ? 'transfer' : 'card';
+            $meta = ['kind_inferred' => true];
+        }
+
+        if (!isset($meta)) {
+            $meta = [];
         }
 
         if ($kind === 'transfer') {
@@ -1414,7 +1849,81 @@ class StatementImportService
             'destination' => $destination,
             'motif' => $motif,
             'cheque_number' => $chequeNumber,
-            'meta' => [],
+            'meta' => $meta,
         ];
+    }
+
+    private function applySemanticTypeCorrections(string $label, string $initialType): string
+    {
+        $norm = Normalization::normalizeLabel($label);
+
+        if (preg_match('/\b(RETRAIT\s+DAB|RETRAIT|DAB|ATM)\b/u', $norm)) {
+            return 'debit';
+        }
+
+        if (preg_match('/\b(VIR\s+SEPA\s+RECU|VER\s+SEPA\s+RECU|RECU\b|RE[ÇC]U\b)\b/u', $norm)) {
+            return 'credit';
+        }
+
+        if (preg_match('/\b(VIR(?:EMENT)?\s+SEPA\s+EM[ISl]|VER\s+SEPA\s+EM[ISl]|SCT\s+(?:INST\s+)?EM[ISl])\b/u', $norm)) {
+            return 'debit';
+        }
+
+        return $initialType;
+    }
+
+    private function extractTransferMotif(string $label): ?string
+    {
+        if (preg_match('/(?:^|\/)\s*MOT\s*:?\s*F?\s*([^\/]+)(?=\/|$)/iu', $label, $m)) {
+            $value = Normalization::cleanLabel((string) ($m[1] ?? ''));
+            return $value !== '' ? $value : null;
+        }
+
+        return null;
+    }
+
+    private function extractTransferReference(string $label): ?string
+    {
+        if (preg_match('/(?:^|\/)\s*REF(?:DO|BEN)?\s*:?\s*([^\/]+)(?=\/|$)/iu', $label, $m)) {
+            $value = Normalization::cleanLabel((string) ($m[1] ?? ''));
+            return $value !== '' ? $value : null;
+        }
+
+        return null;
+    }
+
+    private function extractTransferOrigin(string $label): ?string
+    {
+        if (preg_match('/(?:^|\/)\s*DE\s+([^\/]+)(?=\/|$)/iu', $label, $m)) {
+            $value = Normalization::cleanLabel((string) ($m[1] ?? ''));
+            return $value !== '' ? $value : null;
+        }
+
+        return null;
+    }
+
+    private function extractTransferDestination(string $label): ?string
+    {
+        if (preg_match('/(?:^|\/)\s*BEN\s+([^\/]+)(?=\/|$)/iu', $label, $m)) {
+            $value = Normalization::cleanLabel((string) ($m[1] ?? ''));
+            return $value !== '' ? $value : null;
+        }
+
+        if (preg_match('/(?:^|\/)\s*VERS\s+([^\/]+)(?=\/|$)/iu', $label, $m)) {
+            $value = Normalization::cleanLabel((string) ($m[1] ?? ''));
+            return $value !== '' ? $value : null;
+        }
+
+        return null;
+    }
+
+    private function extractTransferCounterparty(string $label, string $marker): ?string
+    {
+        if (preg_match('/(?:^|\/)\s*'.preg_quote($marker, '/').'\s+([^\/]+)(?=\/|$)/iu', $label, $m)) {
+            $value = Normalization::cleanLabel((string) ($m[1] ?? ''));
+            return $value !== '' ? $value : null;
+        }
+
+        return null;
     }
 }

@@ -26,8 +26,10 @@ Route::middleware(['auth', 'accesslog'])->group(function () {
     Route::get('/cases/create', [CaseController::class, 'create'])->name('cases.create');
     Route::post('/cases', [CaseController::class, 'store'])->name('cases.store');
     Route::get('/cases/{case}', [CaseController::class, 'show'])->name('cases.show');
+    Route::get('/cases/{case}/transactions/export', [CaseController::class, 'exportTransactions'])->name('cases.transactions.export');
     Route::patch('/cases/{case}/details', [CaseController::class, 'updateDetails'])->name('cases.update-details');
     Route::post('/cases/{case}/analyze', [CaseController::class, 'analyze'])->name('cases.analyze');
+    Route::post('/cases/{case}/beneficiary-overrides', [CaseController::class, 'storeBeneficiaryOverrides'])->name('cases.beneficiary-overrides');
     Route::post('/cases/{case}/ai', [AiAssistantController::class, 'analyze'])->name('cases.ai');
 
     Route::post('/cases/{case}/reports', [ReportController::class, 'generate'])->name('reports.generate');
@@ -36,6 +38,7 @@ Route::middleware(['auth', 'accesslog'])->group(function () {
     Route::post('/cases/{case}/bank-accounts', [BankAccountController::class, 'store'])->name('bank-accounts.store');
     Route::post('/bank-accounts/{bankAccount}/statements', [StatementController::class, 'store'])->name('statements.store');
     Route::delete('/statements/{statement}', [StatementController::class, 'destroy'])->name('statements.destroy');
+    Route::get('/cases/{case}/statements/{statement}/download', [CaseController::class, 'downloadStatement'])->name('statements.download');
 
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');

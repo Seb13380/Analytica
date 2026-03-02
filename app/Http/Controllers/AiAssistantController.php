@@ -21,14 +21,20 @@ class AiAssistantController extends Controller
         $case->load(['bankAccounts.statements']);
         $accountIds = $case->bankAccounts()->pluck('id');
 
-        $max = (int) config('analytica.ai.max_transactions', 300);
+        // Limit transactions only when sending to OpenAI (token budget).
+        // When AI is disabled the summary is computed locally—use all transactions.
+        $aiActive = (bool) config('analytica.ai.enabled') && env('OPENAI_API_KEY', '') !== '';
+        $max = $aiActive ? (int) config('analytica.ai.max_transactions', 300) : null;
 
-        $transactions = Transaction::query()
+        $txQuery = Transaction::query()
             ->whereIn('bank_account_id', $accountIds)
             ->orderByDesc('date')
-            ->orderByDesc('id')
-            ->limit($max)
-            ->get([
+            ->orderByDesc('id');
+        if ($max !== null) {
+            $txQuery->limit($max);
+        }
+
+        $transactions = $txQuery->get([
                 'date', 'amount', 'type', 'kind', 'origin', 'destination', 'motif', 'cheque_number', 'label', 'normalized_label', 'anomaly_score',
             ])
             ->map(function ($t) {
@@ -73,6 +79,12 @@ class AiAssistantController extends Controller
         try {
             $result = $assistant->analyzeCase($case, $context, (string) ($validated['prompt'] ?? ''));
         } catch (\Throwable $e) {
+            $case->forceFill([
+                'ai_last_prompt' => (string) ($validated['prompt'] ?? ''),
+                'ai_last_error' => $e->getMessage(),
+                'ai_last_ran_at' => now(),
+            ])->save();
+
             $request->session()->put('cases.'.$case->getKey().'.last_ai', [
                 'prompt' => (string) ($validated['prompt'] ?? ''),
                 'error' => $e->getMessage(),
@@ -83,6 +95,13 @@ class AiAssistantController extends Controller
                 ->route('cases.show', $case)
                 ->with('ai_error', $e->getMessage());
         }
+
+        $case->forceFill([
+            'ai_last_prompt' => (string) ($validated['prompt'] ?? ''),
+            'ai_last_result' => $result,
+            'ai_last_error' => null,
+            'ai_last_ran_at' => now(),
+        ])->save();
 
         $request->session()->put('cases.'.$case->getKey().'.last_ai', [
             'prompt' => (string) ($validated['prompt'] ?? ''),
