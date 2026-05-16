@@ -1569,10 +1569,16 @@ class CaseController extends Controller
         $transactions = (clone $txBase)->orderBy('date')->orderBy('id')->get()
             ->map(function ($tx) {
                 $labelForDisplay = (string) ($tx->normalized_label ?? $tx->motif ?? $tx->label ?? '');
-                $clean = preg_replace('/\s+/u', ' ', trim(Normalization::cleanLabel($labelForDisplay)));
-                $tx->display_label = $clean !== '' ? $clean : '—';
-                $tx->display_origin = Normalization::cleanLabel((string) ($tx->origin ?? ''));
-                $tx->display_destination = Normalization::cleanLabel((string) ($tx->destination ?? ''));
+                $display = $this->buildDisplayLabel($labelForDisplay, 220);
+                $tx->display_label = $display['short'];
+
+                // Truncate origin/destination: apply normalization + cap at 80 chars.
+                $origin = Normalization::cleanLabel((string) ($tx->origin ?? ''));
+                $tx->display_origin = mb_strlen($origin) > 80 ? mb_substr($origin, 0, 80) . '...' : ($origin !== '' ? $origin : '--');
+
+                $dest = Normalization::cleanLabel((string) ($tx->destination ?? ''));
+                $tx->display_destination = mb_strlen($dest) > 80 ? mb_substr($dest, 0, 80) . '...' : ($dest !== '' ? $dest : '--');
+
                 return $tx;
             });
 
@@ -2726,11 +2732,19 @@ class CaseController extends Controller
     private function stripLegalMentions(string $label): string
     {
         $patterns = [
-            '/BNP\s+PARIBAS\s+SA\s+AU\s+CAPITAL.*$/iu',
-            '/SERVICE\s+CLIENT.*$/iu',
-            '/\bRCS\b.*$/iu',
-            '/\bORIAS\b.*$/iu',
-            '/\bTAEG\b.*$/iu',
+            '/BNP\s+PARIBAS\s+SA\s+AU\s+CAPITAL.*$/isu',
+            '/SERVICE\s+CLIENT.*$/isu',
+            '/\bRCS\b.*$/isu',
+            '/\bORIAS\b.*$/isu',
+            '/\bTAEG\b.*$/isu',
+            // BNP satisfaction/complaint boilerplate (appears in transfer labels after OCR)
+            '/VOTRE\s+SAT[A-Z\s]*SFACT[A-Z\s]*ON\s+EST.*$/isu',
+            '/VOTRE\s+SATISFACTION\s+EST.*$/isu',
+            '/TOUTE\s*FO[A-Z\s]*S\s+S\s+VOUS\s+SOU.*$/isu',
+            '/TOUTEFOIS.*RECLAMATION.*$/isu',
+            '/\bMEDIATEUR\b.*$/isu',
+            '/\bMEDATEUR\b.*$/isu',
+            '/\bMEDIAT\b.*$/isu',
         ];
 
         $clean = $label;

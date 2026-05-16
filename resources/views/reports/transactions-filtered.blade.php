@@ -1,206 +1,128 @@
 <!doctype html>
 <html lang="fr">
 <head>
-    <meta charset="utf-8">
-    <style>
-        @font-face {
-            font-family: 'Poppins';
-            font-style: normal;
-            font-weight: 400;
-            src: url('{{ $poppinsRegularPath }}') format('truetype');
-        }
-        @font-face {
-            font-family: 'Poppins';
-            font-style: normal;
-            font-weight: 600;
-            src: url('{{ $poppinsSemiBoldPath }}') format('truetype');
-        }
+<meta charset="utf-8">
+<style>
+    @font-face { font-family:'Poppins'; font-weight:400; src:url('{{ $poppinsRegularPath }}') format('truetype'); }
+    @font-face { font-family:'Poppins'; font-weight:700; src:url('{{ $poppinsSemiBoldPath }}') format('truetype'); }
 
-        * { box-sizing: border-box; }
-        body {
-            font-family: 'Poppins', DejaVu Sans, sans-serif;
-            font-size: 10px;
-            color: #111827;
-            margin: 16px 20px;
-        }
+    * { box-sizing:border-box; }
+    body { font-family:'Poppins',DejaVu Sans,sans-serif; font-size:9px; color:#111827; margin:14px 18px; }
 
-        /* ── Header ── */
-        .header {
-            border-bottom: 2px solid #111827;
-            padding-bottom: 8px;
-            margin-bottom: 10px;
-        }
-        .header h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px 0; }
-        .header p  { margin: 1px 0; color: #6b7280; font-size: 9px; }
+    .header { border-bottom:2px solid #111827; padding-bottom:7px; margin-bottom:8px; }
+    .header h1 { font-size:15px; font-weight:700; margin:0 0 2px 0; }
+    .header p  { margin:1px 0; color:#6b7280; font-size:8.5px; }
 
-        /* ── Filters badge row ── */
-        .filters-row { margin: 6px 0 10px 0; font-size: 9px; color: #374151; }
-        .badge {
-            display: inline-block;
-            border: 1px solid #d1d5db;
-            border-radius: 4px;
-            padding: 1px 5px;
-            margin-right: 4px;
-            background: #f9fafb;
-        }
+    .filters { margin:5px 0 9px 0; font-size:8.5px; color:#374151; }
+    .badge { display:inline-block; border:1px solid #d1d5db; border-radius:3px; padding:1px 4px; margin-right:3px; background:#f9fafb; }
 
-        /* ── KPI summary bar ── */
-        .kpi-bar {
-            display: table;
-            width: 100%;
-            border: 1px solid #e5e7eb;
-            border-radius: 6px;
-            background: #f9fafb;
-            margin-bottom: 12px;
-        }
-        .kpi-bar td {
-            display: table-cell;
-            width: 25%;
-            padding: 6px 10px;
-            border-right: 1px solid #e5e7eb;
-            vertical-align: middle;
-        }
-        .kpi-bar td:last-child { border-right: none; }
-        .kpi-label { font-size: 9px; color: #6b7280; margin-bottom: 1px; }
-        .kpi-value { font-size: 13px; font-weight: 700; }
-        .kpi-debit  { color: #b91c1c; }
-        .kpi-credit { color: #15803d; }
-        .kpi-net-pos { color: #15803d; }
-        .kpi-net-neg { color: #b91c1c; }
+    .kpi { width:100%; border-collapse:collapse; margin-bottom:10px; border:1px solid #e5e7eb; }
+    .kpi td { width:25%; padding:5px 10px; border-right:1px solid #e5e7eb; }
+    .kpi td:last-child { border-right:none; }
+    .kl { font-size:8px; color:#6b7280; }
+    .kv { font-size:12px; font-weight:700; }
+    .red { color:#b91c1c; }
+    .grn { color:#15803d; }
 
-        /* ── Transaction table ── */
-        table.tx-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 4px;
-        }
-        table.tx-table th {
-            background: #f3f4f6;
-            border: 1px solid #e5e7eb;
-            padding: 5px 6px;
-            text-align: left;
-            font-weight: 600;
-            font-size: 9px;
-            white-space: nowrap;
-        }
-        table.tx-table td {
-            border: 1px solid #e5e7eb;
-            padding: 4px 6px;
-            vertical-align: top;
-            font-size: 9px;
-            word-break: break-word;
-        }
-        table.tx-table tr:nth-child(even) td { background: #f9fafb; }
-        table.tx-table tr.debit  td.amount { color: #b91c1c; }
-        table.tx-table tr.credit td.amount { color: #15803d; }
-        .amount { text-align: right; white-space: nowrap; font-weight: 600; }
-        .muted   { color: #9ca3af; }
+    table.tx { width:100%; border-collapse:collapse; }
+    table.tx th { background:#f3f4f6; border:1px solid #e5e7eb; padding:4px 5px; text-align:left; font-weight:700; font-size:8.5px; white-space:nowrap; }
+    table.tx th.r { text-align:right; }
+    table.tx td { border:1px solid #e5e7eb; padding:3px 5px; vertical-align:top; font-size:8.5px; word-break:break-word; }
+    table.tx tr:nth-child(even) td { background:#f9fafb; }
+    td.dbt { color:#b91c1c; font-weight:700; text-align:right; white-space:nowrap; }
+    td.cdt { color:#15803d; font-weight:700; text-align:right; white-space:nowrap; }
+    td.emp { color:#d1d5db; text-align:right; }
 
-        /* ── Footer totals row ── */
-        tfoot td {
-            border-top: 2px solid #374151;
-            font-weight: 700;
-            font-size: 9.5px;
-            padding: 5px 6px;
-            background: #f3f4f6;
-        }
+    tfoot td { border-top:2px solid #374151; font-weight:700; font-size:9px; padding:4px 5px; background:#f3f4f6; }
+    tfoot td.r { text-align:right; }
 
-        /* ── Page footer ── */
-        .page-footer { margin-top: 14px; font-size: 8px; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 5px; }
-
-        /* DomPDF page break helper */
-        .page-break { page-break-after: always; }
-    </style>
+    .foot { margin-top:12px; font-size:7.5px; color:#9ca3af; border-top:1px solid #e5e7eb; padding-top:4px; }
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>Analytica — Transactions filtrées</h1>
-        <p>Dossier #{{ $case->id }} &mdash; {{ e($case->title) }}</p>
-        @if (!empty($case->deceased_name))
-            <p>Défunt·e : {{ e($case->deceased_name) }}{{ !empty($case->death_date) ? ' · Décès : ' . \Carbon\Carbon::parse($case->death_date)->format('d/m/Y') : '' }}</p>
-        @endif
-        <p>Document généré le {{ $generatedAt }}</p>
-    </div>
 
-    {{-- Active filters --}}
-    @if ($activeFilters->isNotEmpty())
-        <div class="filters-row">
-            <strong>Filtres appliqués :</strong>
-            @foreach ($activeFilters as $label => $value)
-                <span class="badge">{{ $label }} : {{ $value }}</span>
-            @endforeach
-        </div>
+<div class="header">
+    <h1>Analytica &mdash; Transactions filtrees</h1>
+    <p>Dossier #{{ $case->id }} &mdash; {{ e($case->title) }}</p>
+    @if (!empty($case->deceased_name))
+        <p>Defunt(e) : {{ e($case->deceased_name) }}{{ !empty($case->death_date) ? ' | Deces : ' . \Carbon\Carbon::parse($case->death_date)->format('d/m/Y') : '' }}</p>
     @endif
+    <p>Document genere le {{ $generatedAt }}</p>
+</div>
 
-    {{-- KPI bar --}}
-    <table class="kpi-bar" style="border-collapse:separate;">
+@if ($activeFilters->isNotEmpty())
+<div class="filters">
+    <strong>Filtres :</strong>
+    @foreach ($activeFilters as $lbl => $val)
+        <span class="badge">{{ $lbl }} : {{ $val }}</span>
+    @endforeach
+</div>
+@endif
+
+<table class="kpi">
+    <tr>
+        <td><div class="kl">Lignes</div><div class="kv">{{ number_format($transactions->count()) }}</div></td>
+        <td><div class="kl">Total debits</div><div class="kv red">{{ number_format($totalDebit, 2, ',', ' ') }} &euro;</div></td>
+        <td><div class="kl">Total credits</div><div class="kv grn">{{ number_format($totalCredit, 2, ',', ' ') }} &euro;</div></td>
+        <td>
+            <div class="kl">Net (credits &ndash; debits)</div>
+            <div class="kv {{ $net >= 0 ? 'grn' : 'red' }}">
+                @if ($net >= 0){{ number_format($net, 2, ',', ' ') }} &euro;
+                @else({{ number_format(abs($net), 2, ',', ' ') }}) &euro;@endif
+            </div>
+        </td>
+    </tr>
+</table>
+
+<table class="tx">
+    <thead>
         <tr>
-            <td>
-                <div class="kpi-label">Lignes</div>
-                <div class="kpi-value">{{ number_format($transactions->count()) }}</div>
-            </td>
-            <td>
-                <div class="kpi-label">Total débits</div>
-                <div class="kpi-value kpi-debit">{{ number_format($totalDebit, 2, ',', ' ') }} €</div>
-            </td>
-            <td>
-                <div class="kpi-label">Total crédits</div>
-                <div class="kpi-value kpi-credit">{{ number_format($totalCredit, 2, ',', ' ') }} €</div>
-            </td>
-            <td>
-                <div class="kpi-label">Net (crédit &minus; débit)</div>
-                <div class="kpi-value {{ $net >= 0 ? 'kpi-net-pos' : 'kpi-net-neg' }}">
-                    {{ ($net >= 0 ? '+' : '') . number_format($net, 2, ',', ' ') }} €
-                </div>
-            </td>
+            <th style="width:7%">Date</th>
+            <th style="width:7%">Categorie</th>
+            <th style="width:13%">Origine</th>
+            <th style="width:13%">Destinataire</th>
+            <th style="width:42%">Libelle / Motif</th>
+            <th style="width:5%">Cheque</th>
+            <th style="width:6.5%" class="r">Debit</th>
+            <th style="width:6.5%" class="r">Credit</th>
         </tr>
-    </table>
+    </thead>
+    <tbody>
+    @forelse ($transactions as $tx)
+        @php
+            $isDebit  = ($tx->type ?? '') === 'debit';
+            $isCredit = ($tx->type ?? '') === 'credit';
+            $amt = number_format(abs((float) $tx->amount), 2, ',', ' ');
+        @endphp
+        <tr>
+            <td>{{ optional($tx->date)->format('d/m/Y') }}</td>
+            <td>{{ $tx->kind ?? '--' }}</td>
+            <td>{{ $tx->display_origin ?? '--' }}</td>
+            <td>{{ $tx->display_destination ?? '--' }}</td>
+            <td>{{ $tx->display_label ?? '--' }}</td>
+            <td>{{ $tx->cheque_number ?? '--' }}</td>
+            <td class="{{ $isDebit ? 'dbt' : 'emp' }}">{{ $isDebit ? $amt : '' }}</td>
+            <td class="{{ $isCredit ? 'cdt' : 'emp' }}">{{ $isCredit ? $amt : '' }}</td>
+        </tr>
+    @empty
+        <tr><td colspan="8" style="text-align:center;padding:10px;color:#9ca3af;">Aucune transaction.</td></tr>
+    @endforelse
+    </tbody>
+    <tfoot>
+        <tr>
+            <td colspan="6" class="r">
+                Total debits : {{ number_format($totalDebit, 2, ',', ' ') }} &euro;
+                &nbsp;|&nbsp; Total credits : {{ number_format($totalCredit, 2, ',', ' ') }} &euro;
+                &nbsp;|&nbsp; Net :
+                @if ($net >= 0){{ number_format($net, 2, ',', ' ') }} &euro;
+                @else({{ number_format(abs($net), 2, ',', ' ') }}) &euro;@endif
+            </td>
+            <td class="r dbt">{{ number_format($totalDebit, 2, ',', ' ') }}</td>
+            <td class="r cdt">{{ number_format($totalCredit, 2, ',', ' ') }}</td>
+        </tr>
+    </tfoot>
+</table>
 
-    {{-- Transaction table --}}
-    <table class="tx-table">
-        <thead>
-            <tr>
-                <th style="width:7%">Date</th>
-                <th style="width:6%">Sens</th>
-                <th style="width:7%">Catégorie</th>
-                <th style="width:15%">Origine</th>
-                <th style="width:15%">Destinataire</th>
-                <th style="width:37%">Libellé / Motif</th>
-                <th style="width:6%">N° chèque</th>
-                <th style="width:7%">Montant</th>
-            </tr>
-        </thead>
-        <tbody>
-            @forelse ($transactions as $tx)
-                @php
-                    $typeClass = ($tx->type ?? '') === 'debit' ? 'debit' : (($tx->type ?? '') === 'credit' ? 'credit' : '');
-                    $typeLabel = ($tx->type ?? '') === 'debit' ? 'Débit' : (($tx->type ?? '') === 'credit' ? 'Crédit' : '—');
-                    $sign      = ($tx->type ?? '') === 'debit' ? '−' : (($tx->type ?? '') === 'credit' ? '+' : '');
-                @endphp
-                <tr class="{{ $typeClass }}">
-                    <td>{{ optional($tx->date)->format('d/m/Y') }}</td>
-                    <td>{{ $typeLabel }}</td>
-                    <td>{{ $tx->kind ?? '—' }}</td>
-                    <td>{{ ($tx->display_origin ?? '') !== '' ? $tx->display_origin : '—' }}</td>
-                    <td>{{ ($tx->display_destination ?? '') !== '' ? $tx->display_destination : '—' }}</td>
-                    <td>{{ $tx->display_label ?? '—' }}</td>
-                    <td>{{ $tx->cheque_number ?? '—' }}</td>
-                    <td class="amount">{{ $sign }}{{ number_format(abs((float) $tx->amount), 2, ',', ' ') }}</td>
-                </tr>
-            @empty
-                <tr><td colspan="8" class="muted" style="text-align:center;padding:12px;">Aucune transaction.</td></tr>
-            @endforelse
-        </tbody>
-        <tfoot>
-            <tr>
-                <td colspan="7" style="text-align:right;">Total débits &nbsp; {{ number_format($totalDebit, 2, ',', ' ') }} € &nbsp;|&nbsp; Total crédits &nbsp; {{ number_format($totalCredit, 2, ',', ' ') }} € &nbsp;|&nbsp; Net &nbsp; {{ ($net >= 0 ? '+' : '') . number_format($net, 2, ',', ' ') }} €</td>
-                <td class="amount">{{ number_format($transactions->count()) }} lignes</td>
-            </tr>
-        </tfoot>
-    </table>
-
-    <div class="page-footer">
-        Analytica — usage strictement confidentiel · Généré le {{ $generatedAt }} · Dossier #{{ $case->id }}
-    </div>
+<div class="foot">Analytica &mdash; usage strictement confidentiel &mdash; {{ $generatedAt }} &mdash; Dossier #{{ $case->id }}</div>
 </body>
 </html>
