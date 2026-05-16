@@ -310,10 +310,16 @@ class CaseController extends Controller
 
         $transactions->setCollection(
             $transactions->getCollection()->map(function ($tx) {
-                $display = $this->buildDisplayLabel((string) ($tx->motif ?? $tx->label ?? ''), 120);
+                // Prefer normalized_label (OCR-corrected) for display; fall back to motif/label.
+                $labelForDisplay = (string) ($tx->normalized_label ?? $tx->motif ?? $tx->label ?? '');
+                $display = $this->buildDisplayLabel($labelForDisplay, 120);
                 $tx->display_label = $display['short'];
                 $tx->display_label_full = $display['full'];
                 $tx->display_label_truncated = $display['truncated'];
+
+                // Apply OCR normalization to origin and destination for cleaner display.
+                $tx->display_origin = Normalization::cleanLabel((string) ($tx->origin ?? ''));
+                $tx->display_destination = Normalization::cleanLabel((string) ($tx->destination ?? ''));
 
                 return $tx;
             })
@@ -1539,6 +1545,68 @@ class CaseController extends Controller
         $filename = sprintf('analytica-case-%d-transactions-filtres-%s.xlsx', $case->getKey(), now()->format('Ymd_His'));
 
         return Excel::download(new CaseTransactionsExport($case, $transactions), $filename, ExcelFormat::XLSX);
+    }
+
+    public function exportTransactionsPdf(Request $request, CaseFile $case)
+    {
+        Gate::authorize('view', $case);
+
+        $case->load(['bankAccounts.statements']);
+        $filters = $this->buildTransactionFilters($request);
+
+        $selectedAccounts = $case->bankAccounts;
+        if ($filters['bank_name'] !== '') {
+            $selectedAccounts = $selectedAccounts->where('bank_name', $filters['bank_name']);
+        }
+        if ($filters['bank_account_id'] !== '' && ctype_digit($filters['bank_account_id'])) {
+            $selectedAccounts = $selectedAccounts->where('id', (int) $filters['bank_account_id']);
+        }
+
+        $accountIds = $selectedAccounts->pluck('id');
+        $txBase = Transaction::query()->whereIn('bank_account_id', $accountIds);
+        $this->applyTransactionFilters($txBase, $filters);
+
+        $transactions = (clone $txBase)->orderBy('date')->orderBy('id')->get()
+            ->map(function ($tx) {
+                $labelForDisplay = (string) ($tx->normalized_label ?? $tx->motif ?? $tx->label ?? '');
+                $clean = preg_replace('/\s+/u', ' ', trim(Normalization::cleanLabel($labelForDisplay)));
+                $tx->display_label = $clean !== '' ? $clean : '—';
+                $tx->display_origin = Normalization::cleanLabel((string) ($tx->origin ?? ''));
+                $tx->display_destination = Normalization::cleanLabel((string) ($tx->destination ?? ''));
+                return $tx;
+            });
+
+        $totalDebit  = (float) (clone $txBase)->where('type', 'debit')->sum(\Illuminate\Support\Facades\DB::raw('abs(amount)'));
+        $totalCredit = (float) (clone $txBase)->where('type', 'credit')->sum(\Illuminate\Support\Facades\DB::raw('abs(amount)'));
+        $net = $totalCredit - $totalDebit;
+
+        $activeFilters = collect([
+            'Du'         => $filters['date_from'] ?? null,
+            'Au'         => $filters['date_to'] ?? null,
+            'Banque'     => $filters['bank_name'] ?? null,
+            'Sens'       => $filters['type'] ?? null,
+            'Catégorie'  => $filters['kind'] ?? null,
+            'Texte'      => $filters['q'] ?? null,
+            'Score min'  => $filters['score_min'] ?? null,
+        ])->filter(fn ($v) => !is_null($v) && $v !== '');
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.transactions-filtered', [
+            'case'           => $case,
+            'transactions'   => $transactions,
+            'totalDebit'     => round($totalDebit, 2),
+            'totalCredit'    => round($totalCredit, 2),
+            'net'            => round($net, 2),
+            'activeFilters'  => $activeFilters,
+            'generatedAt'    => now()->format('d/m/Y H:i'),
+            'poppinsRegularPath'  => 'file://' . public_path('fonts/Poppins-Regular.ttf'),
+            'poppinsSemiBoldPath' => 'file://' . public_path('fonts/Poppins-SemiBold.ttf'),
+        ])
+        ->setOptions(['isRemoteEnabled' => true])
+        ->setPaper('a4', 'landscape');
+
+        $filename = sprintf('analytica-transactions-case-%d-%s.pdf', $case->getKey(), now()->format('Ymd_His'));
+
+        return $pdf->download($filename);
     }
 
     public function downloadStatement(Request $request, CaseFile $case, Statement $statement, EncryptedFileStorage $storage)

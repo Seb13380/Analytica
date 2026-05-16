@@ -576,6 +576,85 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                         </div>
                     </div>
                 </div>
+
+                {{-- ====== RECHERCHE RAPIDE TRANSACTIONS — toujours visible dans Bloc 1 ====== --}}
+                @php $hasAnyTxFilter = collect($tx_filters ?? [])->filter(fn($v) => $v !== '' && !is_null($v))->isNotEmpty(); @endphp
+                <div class="mt-5 pt-4" style="border-top:1px solid var(--beige-200);" x-data="{
+                    q: @js($tx_filters['q'] ?? ''),
+                    aiOpen: false,
+                    aiQuery: '',
+                    aiLoading: false,
+                    aiSuggestions: [],
+                    aiError: '',
+                    async aiSearch() {
+                        if (this.aiQuery.trim() === '') return;
+                        this.aiLoading = true; this.aiError = ''; this.aiSuggestions = [];
+                        try {
+                            const resp = await fetch('{{ route('cases.search-semantic', $case) }}', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content, 'Accept': 'application/json' },
+                                body: JSON.stringify({ theme: this.aiQuery })
+                            });
+                            if (!resp.ok) throw new Error();
+                            const data = await resp.json();
+                            this.aiSuggestions = data.keywords || [];
+                            if (!this.aiSuggestions.length) this.aiError = 'Aucune suggestion.';
+                        } catch(e) { this.aiError = 'Service IA indisponible.'; }
+                        finally { this.aiLoading = false; }
+                    },
+                    applyKeyword(kw) {
+                        this.q = kw; this.aiOpen = false;
+                        this.$nextTick(() => document.getElementById('bloc1-tx-search-form').submit());
+                    }
+                }">
+                    <div class="text-xs font-semibold mb-2" style="color:var(--gold);text-transform:uppercase;letter-spacing:.08em;">Recherche dans les transactions</div>
+                    <form id="bloc1-tx-search-form" method="GET" action="{{ route('cases.show', $case) }}#card-transactions" class="flex gap-2 items-stretch">
+                        @foreach (array_filter($tx_filters ?? [], fn($v, $k) => $k !== 'q' && $v !== '' && !is_null($v), ARRAY_FILTER_USE_BOTH) as $fk => $fv)
+                            <input type="hidden" name="{{ $fk }}" value="{{ $fv }}">
+                        @endforeach
+                        <div class="relative flex-1">
+                            <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">🔍</span>
+                            <input type="text" name="q" id="bloc1-q-input" x-model="q"
+                                   @keydown.enter="$el.form.submit()"
+                                   placeholder="Libellé, nom, montant, numéro de chèque…"
+                                   class="block w-full rounded-lg border border-gray-300 bg-white pl-9 pr-4 py-2.5 text-sm shadow-sm focus:border-green-500 focus:ring-green-500 focus:outline-none">
+                        </div>
+                        <button type="submit" class="inline-flex items-center px-4 py-2.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors whitespace-nowrap">Rechercher</button>
+                        <template x-if="q !== ''">
+                            <a href="{{ route('cases.show', $case) }}" class="inline-flex items-center px-3 py-2.5 rounded-lg border border-gray-300 bg-white text-sm text-gray-500 hover:bg-gray-50">✕</a>
+                        </template>
+                        <button type="button" @click="aiOpen = !aiOpen" class="inline-flex items-center gap-1 px-3 py-2.5 rounded-lg border border-purple-300 bg-purple-50 text-purple-700 text-sm font-medium hover:bg-purple-100 whitespace-nowrap" title="Recherche IA sémantique">✨ IA</button>
+                    </form>
+                    {{-- IA panel --}}
+                    <div x-show="aiOpen" x-cloak x-transition class="mt-2 rounded-xl border border-purple-200 bg-purple-50 p-4 shadow-sm">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-sm font-semibold text-purple-900">✨ Recherche sémantique IA</span>
+                            <button type="button" @click="aiOpen = false" class="text-purple-400 hover:text-purple-800 text-xs">✕</button>
+                        </div>
+                        <p class="text-xs text-purple-700 mb-3">Décrivez le type de dépense (ex : <em>voyage</em>, <em>voiture</em>, <em>restaurant</em>, <em>travaux</em>, <em>médecin</em>)…</p>
+                        <div class="flex gap-2">
+                            <input type="text" x-model="aiQuery" @keydown.enter.prevent="aiSearch()" placeholder="ex : voyage, essence, médecin…" class="flex-1 rounded-lg border border-purple-200 px-3 py-2 text-sm bg-white focus:border-purple-500 focus:ring-purple-500 focus:outline-none">
+                            <button type="button" @click="aiSearch()" :disabled="aiLoading || aiQuery.trim() === ''" class="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50">
+                                <span x-show="!aiLoading">Trouver les mots-clés</span><span x-show="aiLoading" x-cloak>⏳</span>
+                            </button>
+                        </div>
+                        <div x-show="aiError !== ''" x-cloak class="mt-2 text-xs text-red-600" x-text="aiError"></div>
+                        <div x-show="aiSuggestions.length > 0" x-cloak class="mt-3">
+                            <div class="text-xs text-purple-700 mb-2 font-medium">Cliquez sur un mot-clé :</div>
+                            <div class="flex flex-wrap gap-2">
+                                <template x-for="kw in aiSuggestions" :key="kw">
+                                    <button type="button" @click="applyKeyword(kw)" class="px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 text-xs font-medium hover:bg-purple-100" x-text="kw"></button>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                    @if ($hasAnyTxFilter)
+                        <div class="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-md px-3 py-2">
+                            Filtre actif : <strong>{{ $tx_filters['q'] !== '' ? '«\ '.$tx_filters['q'].' »' : implode(' · ', array_filter(array_values($tx_filters))) }}</strong>
+                            — <a href="{{ route('cases.show', $case) }}#card-transactions" class="underline">voir les {{ (int)($tx_totals['count'] ?? 0) }} transactions correspondantes ↓</a>
+                        </div>
+                    @endif
+                </div>
             </section>
 
             <section class="bg-white" style="border:1px solid var(--beige-200);border-radius:2px;padding:1.5rem;">
@@ -767,7 +846,8 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                 </div>
             </section>
 
-            <section class="bg-white" style="border:1px solid var(--beige-200);border-radius:2px;padding:1rem 1.4rem;" x-data="{ fullOpen: false }">
+            @php $bloc3AutoOpen = collect($tx_filters ?? [])->filter(fn($v) => $v !== '' && !is_null($v))->isNotEmpty(); @endphp
+            <section class="bg-white" style="border:1px solid var(--beige-200);border-radius:2px;padding:1rem 1.4rem;" x-data="{ fullOpen: {{ $bloc3AutoOpen ? 'true' : 'false' }} }">
                 <div class="flex items-center justify-between gap-3">
                     <div class="section-label" style="margin-bottom:0;">Bloc 3 — Analyse complète</div>
                     <button type="button" @click="fullOpen = !fullOpen" style="display:inline-flex;align-items:center;padding:0.25rem 0.85rem;font-size:0.72rem;border:1px solid var(--beige-200);border-radius:2px;color:#5C5449;background:var(--beige-50);">
@@ -3392,18 +3472,38 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                                 <a class="inline-flex items-center px-3 py-2 text-xs border border-gray-300 rounded-md text-gray-700 bg-white hover:bg-gray-50" href="{{ route('cases.transactions.export', array_merge(['case' => $case], array_filter($tx_filters ?? [], fn($value) => !is_null($value) && $value !== ''))) }}">
                                     Exporter sélection (.xlsx)
                                 </a>
+                                <a class="inline-flex items-center gap-1 px-3 py-2 text-xs border border-rose-300 rounded-md text-rose-700 bg-rose-50 hover:bg-rose-100 font-medium" href="{{ route('cases.transactions.export-pdf', array_merge(['case' => $case], array_filter($tx_filters ?? [], fn($value) => !is_null($value) && $value !== ''))) }}" target="_blank">
+                                    ⬇ PDF propre
+                                </a>
                                 <button type="button" @click="showMotif = !showMotif" class="inline-flex items-center px-3 py-2 text-xs border border-gray-300 rounded-md text-gray-700 bg-white hover:bg-gray-50">
                                     <span x-text="showMotif ? 'Masquer la colonne Motif' : 'Afficher la colonne Motif'"></span>
                                 </button>
-                                <div class="text-sm text-gray-600">
-                                    <span class="text-gray-500">("valeur absolue" = on ignore le signe: 50€ filtre -50€ et +50€)</span>
-                                    Total débit: <span class="font-medium whitespace-nowrap">{{ number_format((float)($tx_totals['debit'] ?? 0), 2, ',', ' ') }}</span>
-                                    · Total crédit: <span class="font-medium whitespace-nowrap">{{ number_format((float)($tx_totals['credit'] ?? 0), 2, ',', ' ') }}</span>
-                                    · Net: <span class="font-medium whitespace-nowrap">{{ number_format((float)($tx_totals['net'] ?? 0), 2, ',', ' ') }}</span>
-                                    · Lignes: <span class="font-medium">{{ (int)($tx_totals['count'] ?? 0) }}</span>
-                                </div>
+                                <p class="text-xs text-gray-400 w-full mt-0 mb-0">"valeur absolue" = on ignore le signe: 50€ filtre -50€ et +50€</p>
                             </div>
                         </form>
+
+                        {{-- Barre récapitulative des totaux --}}
+                        <div class="mt-4 flex flex-wrap gap-3 rounded-xl border border-gray-200 bg-gray-50 px-5 py-3 text-sm">
+                            <div class="flex items-center gap-2">
+                                <span class="text-gray-500">Lignes :</span>
+                                <span class="font-semibold text-gray-800">{{ number_format((int)($tx_totals['count'] ?? 0)) }}</span>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-gray-300 pl-3">
+                                <span class="h-2.5 w-2.5 rounded-full bg-red-400 inline-block"></span>
+                                <span class="text-gray-500">Total débits :</span>
+                                <span class="font-semibold text-red-700">{{ number_format((float)($tx_totals['debit'] ?? 0), 2, ',', ' ') }} €</span>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-gray-300 pl-3">
+                                <span class="h-2.5 w-2.5 rounded-full bg-green-500 inline-block"></span>
+                                <span class="text-gray-500">Total crédits :</span>
+                                <span class="font-semibold text-green-700">{{ number_format((float)($tx_totals['credit'] ?? 0), 2, ',', ' ') }} €</span>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-gray-300 pl-3">
+                                <span class="text-gray-500">Net (crédit − débit) :</span>
+                                @php $net = (float)($tx_totals['net'] ?? 0); @endphp
+                                <span class="font-semibold {{ $net >= 0 ? 'text-green-700' : 'text-red-700' }}">{{ ($net >= 0 ? '+' : '') . number_format($net, 2, ',', ' ') }} €</span>
+                            </div>
+                        </div>
 
                         <div class="mt-4 overflow-x-auto">
                             <table class="min-w-full text-sm">
@@ -3425,10 +3525,10 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                                             <td class="py-3 pr-4 whitespace-nowrap">{{ optional($tx->date)->format('Y-m-d') }}</td>
                                             <td class="py-3 pr-4">{{ ($tx->type ?? '') === 'debit' ? 'débit' : (($tx->type ?? '') === 'credit' ? 'crédit' : '—') }}</td>
                                             <td class="py-3 pr-4">{{ $tx->kind ?? '—' }}</td>
-                                            <td class="py-3 pr-4 whitespace-normal break-words" title="{{ $tx->origin ?? '' }}">{{ $tx->origin ?? '—' }}</td>
-                                            <td class="py-3 pr-4 whitespace-normal break-words" title="{{ $tx->destination ?? '' }}">{{ $tx->destination ?? '—' }}</td>
-                                            <td class="py-3 pr-4 whitespace-normal break-words max-w-[34rem]" x-show="showMotif" x-cloak title="{{ $tx->display_label_full ?? ($tx->motif ?? $tx->label) }}">
-                                                <span>{{ $tx->display_label ?? ($tx->motif ?? $tx->label) }}</span>
+                                            <td class="py-3 pr-4 whitespace-normal break-words" title="{{ $tx->display_origin ?? $tx->origin ?? '' }}">{{ ($tx->display_origin ?? '') !== '' ? $tx->display_origin : '—' }}</td>
+                                            <td class="py-3 pr-4 whitespace-normal break-words" title="{{ $tx->display_destination ?? $tx->destination ?? '' }}">{{ ($tx->display_destination ?? '') !== '' ? $tx->display_destination : '—' }}</td>
+                                            <td class="py-3 pr-4 whitespace-normal break-words max-w-[34rem]" x-show="showMotif" x-cloak title="{{ $tx->display_label_full ?? ($tx->normalized_label ?? $tx->motif ?? $tx->label) }}">
+                                                <span>{{ $tx->display_label ?? ($tx->normalized_label ?? $tx->motif ?? $tx->label) }}</span>
                                                 @if (!empty($tx->display_label_truncated))
                                                     <button type="button" class="text-xs text-slate-600 underline ml-2" onclick="toggleFullLabel(this)" data-short="{{ e($tx->display_label ?? '') }}" data-full="{{ e($tx->display_label_full ?? '') }}">Voir libellé complet</button>
                                                 @endif

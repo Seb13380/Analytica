@@ -27,6 +27,7 @@ Route::middleware(['auth', 'accesslog'])->group(function () {
     Route::post('/cases', [CaseController::class, 'store'])->name('cases.store');
     Route::get('/cases/{case}', [CaseController::class, 'show'])->name('cases.show');
     Route::get('/cases/{case}/transactions/export', [CaseController::class, 'exportTransactions'])->name('cases.transactions.export');
+    Route::get('/cases/{case}/transactions/export-pdf', [CaseController::class, 'exportTransactionsPdf'])->name('cases.transactions.export-pdf');
     Route::patch('/cases/{case}/details', [CaseController::class, 'updateDetails'])->name('cases.update-details');
     Route::post('/cases/{case}/analyze', [CaseController::class, 'analyze'])->name('cases.analyze');
     Route::post('/cases/{case}/beneficiary-overrides', [CaseController::class, 'storeBeneficiaryOverrides'])->name('cases.beneficiary-overrides');
