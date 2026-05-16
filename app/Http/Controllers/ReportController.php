@@ -100,7 +100,11 @@ class ReportController extends Controller
             'flaggedTransactions' => $data['flaggedTransactions'],
             'allTransactionsSample' => $data['allTransactionsSample'],
             'statementStats' => $data['statementStats'],
-        ])->setPaper('a4');
+            'poppinsRegularPath' => 'file://' . public_path('fonts/Poppins-Regular.ttf'),
+            'poppinsSemiBoldPath' => 'file://' . public_path('fonts/Poppins-SemiBold.ttf'),
+        ])
+        ->setOptions(['isRemoteEnabled' => true])
+        ->setPaper('a4');
 
         return $pdf->output();
     }

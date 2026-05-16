@@ -31,6 +31,7 @@ Route::middleware(['auth', 'accesslog'])->group(function () {
     Route::post('/cases/{case}/analyze', [CaseController::class, 'analyze'])->name('cases.analyze');
     Route::post('/cases/{case}/beneficiary-overrides', [CaseController::class, 'storeBeneficiaryOverrides'])->name('cases.beneficiary-overrides');
     Route::post('/cases/{case}/ai', [AiAssistantController::class, 'analyze'])->name('cases.ai');
+    Route::post('/cases/{case}/search-semantic', [AiAssistantController::class, 'semanticSearch'])->name('cases.search-semantic');
 
     Route::post('/cases/{case}/reports', [ReportController::class, 'generate'])->name('reports.generate');
     Route::get('/reports/{report}/download', [ReportController::class, 'download'])->name('reports.download');

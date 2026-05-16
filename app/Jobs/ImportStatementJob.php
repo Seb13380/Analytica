@@ -40,6 +40,7 @@ class ImportStatementJob implements ShouldQueue
         EncryptedFileStorage $storage,
         StatementImportService $importer,
         AnalysisEngine $engine,
+        \App\Services\LlmEnricher $enricher,
     ): void {
         $statement = Statement::query()
             ->with(['bankAccount.caseFile.bankAccounts'])
@@ -437,6 +438,37 @@ class ImportStatementJob implements ShouldQueue
                             $inserted++;
                             continue;
                         }
+
+                        // ── Cross-year REFDO dedup ──────────────────────────────────────────
+                        // When OCR misattributes the year (e.g. 2023-07-21 vs 2025-07-21),
+                        // same-day checks miss it. If the payload carries a unique bank
+                        // reference (REFDO / REFBEN) that matches an existing transaction
+                        // of the same amount+type, treat them as the same transaction and
+                        // keep the one with the date closest to the statement period.
+                        $refdoDuplicate = $this->findRefDoDuplicate($txAccountId, $payload);
+                        if ($refdoDuplicate !== null) {
+                            $keepNew = $this->shouldReplaceExistingWithPayload($refdoDuplicate, $payload);
+                            if ($keepNew) {
+                                $refdoDuplicate->forceFill([
+                                    'date' => $payload['date'],
+                                    'label' => $payload['label'],
+                                    'normalized_label' => $payload['normalized_label'],
+                                    'amount' => $payload['amount'],
+                                    'type' => $payload['type'],
+                                    'balance_after' => $payload['balance_after'],
+                                    'beneficiary_detected' => $payload['beneficiary_detected'],
+                                    'rule_flags' => $payload['rule_flags'],
+                                    'kind' => $payload['kind'],
+                                    'origin' => $payload['origin'],
+                                    'destination' => $payload['destination'],
+                                    'motif' => $payload['motif'],
+                                    'cheque_number' => $payload['cheque_number'],
+                                    'meta' => $payload['meta'],
+                                ])->save();
+                            }
+                            $inserted++;
+                            continue;
+                        }
                     }
 
                     Transaction::create([
@@ -495,6 +527,32 @@ class ImportStatementJob implements ShouldQueue
                 'transactions_imported' => $inserted,
                 'import_error' => $importError,
             ])->save();
+
+            // ── Enrichissement LLM post-import ───────────────────────────────────────
+            // Optionnel (ANALYTICA_AI_ENABLED=true + ANALYTICA_AI_ENRICHER_ENABLED=true).
+            // Récupère les transactions insérées et demande au LLM de corriger/compléter
+            // origin, destination, motif, kind pour chaque libellé OCR.
+            if ((bool) config('analytica.ai.enricher_enabled', false) && (bool) config('analytica.ai.enabled', false)) {
+                try {
+                    $minDate = collect($transactions)->min('date');
+                    $maxDate = collect($transactions)->max('date');
+
+                    if ($minDate && $maxDate) {
+                        $newTransactions = Transaction::query()
+                            ->where('bank_account_id', $bankAccount->getKey())
+                            ->whereBetween('date', [$minDate, $maxDate])
+                            ->get();
+
+                        $enricher->enrichTransactions($newTransactions);
+                    }
+                } catch (\Throwable $enrichEx) {
+                    // Enrichissement non bloquant — import déjà marqué completed
+                    \Illuminate\Support\Facades\Log::warning('[ImportStatementJob] Enrichissement LLM échoué', [
+                        'statement_id' => $this->statementId,
+                        'error'        => $enrichEx->getMessage(),
+                    ]);
+                }
+            }
 
             if ((bool) config('analytica.import.auto_analyze', false)) {
                 $engine->analyzeCase($case->fresh(['bankAccounts']));
@@ -859,6 +917,44 @@ class ImportStatementJob implements ShouldQueue
         }
 
         return null;
+    }
+
+    /**
+     * Detect cross-year duplicates caused by OCR year-attribution errors.
+     * Two transactions with the same REFDO bank reference, same amount, and same type
+     * are the same physical movement regardless of which year the parser assigned.
+     * The REFDO is a 20-40 char hex/alphanumeric token following "REFDO" in the label.
+     */
+    private function findRefDoDuplicate(int $bankAccountId, array $payload): ?Transaction
+    {
+        $normalizedLabel = mb_strtoupper((string) ($payload['normalized_label'] ?? $payload['label'] ?? ''));
+        $type            = (string) ($payload['type'] ?? '');
+        $absAmount       = abs((float) ($payload['amount'] ?? 0));
+
+        if ($absAmount <= 0 || $type === '' || $normalizedLabel === '') {
+            return null;
+        }
+
+        // Extract REFDO token: alphanumeric sequence of 16+ chars after REFDO
+        if (!preg_match('/\bREFDO\s+([A-Z0-9]{16,})/i', $normalizedLabel, $m)) {
+            return null;
+        }
+        $refdo = $m[1];
+
+        // Strip leading OCR-noise chars (single letter prefix like 'A' before a hex string)
+        $refdoCore = preg_replace('/^[A-F]{1,2}(?=[0-9A-F]{16})/i', '', $refdo);
+
+        $candidates = Transaction::query()
+            ->where('bank_account_id', $bankAccountId)
+            ->where('type', $type)
+            ->whereRaw('ABS(amount) = ?', [$absAmount])
+            ->whereRaw("normalized_label ILIKE ? OR normalized_label ILIKE ?",
+                ['%REFDO%'.$refdo.'%', '%REFDO%'.$refdoCore.'%'])
+            ->orderByDesc('id')
+            ->limit(5)
+            ->get();
+
+        return $candidates->first() ?: null;
     }
 
     private function findLikelySameDayDuplicate(int $bankAccountId, array $payload): ?Transaction

@@ -177,6 +177,7 @@ a.text-blue-700:hover { color: #C9A84C !important; }
     background: #F7F2E8;
     border-left: 3px solid #C9A84C;
     border-radius: 0 3px 3px 0;
+    font-family: 'Poppins', sans-serif;
     font-size: 0.75rem;
     color: #2E2A25;
     line-height: 1.4;
@@ -262,6 +263,117 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                 </div>
             @endif
 
+            {{-- ════════════════════════════════════════════════════════════
+                 BLOC DÉMARRAGE — visible quand le dossier n'a pas encore
+                 de transactions importées (nouveau dossier ou base vide).
+                 ════════════════════════════════════════════════════════════ --}}
+            @php
+                $__hasTx = $case->bankAccounts->flatMap(fn($a) => $a->statements)->sum('transactions_imported') > 0
+                        || $case->bankAccounts->flatMap(fn($a) => $a->statements)->contains(fn($s) => in_array($s->import_status, ['processing','pending']));
+                $__hasAccounts = $case->bankAccounts->count() > 0;
+            @endphp
+            @if (!$__hasTx)
+            <div style="border:2px solid #C09B5E;border-radius:6px;background:#FDFAF5;" class="p-6 sm:p-8">
+                <div class="flex items-center gap-3 mb-5">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 shrink-0" style="color:#C09B5E;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+                    </svg>
+                    <div>
+                        <h3 style="font-family:'Cormorant Garamond',serif;font-size:1.4rem;color:#1C1916;font-weight:500;">
+                            Importer les relevés bancaires
+                        </h3>
+                        <p class="text-sm mt-0.5" style="color:#7A6652;">
+                            @if (!$__hasAccounts)
+                                Commencez par ajouter un compte bancaire, puis importez le relevé PDF ou CSV.
+                            @else
+                                Déposez les relevés ci-dessous — l'analyse démarre automatiquement.
+                            @endif
+                        </p>
+                    </div>
+                </div>
+
+                @if (!$__hasAccounts)
+                {{-- Pas encore de compte : formulaire ajout compte --}}
+                <div style="border:1px solid #E5D9C8;border-radius:4px;background:#fff;" class="p-5">
+                    <div class="text-xs font-semibold uppercase tracking-wide mb-3" style="color:#C09B5E;">1 — Ajouter un compte</div>
+                    <form method="POST" action="{{ route('bank-accounts.store', $case) }}" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        @csrf
+                        <div>
+                            <x-input-label for="qs_bank_name" :value="__('Banque *')" />
+                            <x-text-input id="qs_bank_name" name="bank_name" type="text" class="mt-1 block w-full" placeholder="BNP, Crédit Agricole…" required autofocus />
+                        </div>
+                        <div>
+                            <x-input-label for="qs_iban" :value="__('IBAN masqué (optionnel)')" />
+                            <x-text-input id="qs_iban" name="iban_masked" type="text" class="mt-1 block w-full" placeholder="FRXX XXXX …" />
+                        </div>
+                        <div>
+                            <x-input-label for="qs_holder" :value="__('Titulaire (optionnel)')" />
+                            <x-text-input id="qs_holder" name="account_holder" type="text" class="mt-1 block w-full" placeholder="Nom du titulaire" />
+                        </div>
+                        <div class="sm:col-span-3">
+                            <x-primary-button>Ajouter le compte</x-primary-button>
+                        </div>
+                    </form>
+                </div>
+                @else
+                {{-- Comptes existants : formulaire upload direct --}}
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    @foreach ($case->bankAccounts as $__account)
+                    <div style="border:1px solid #E5D9C8;border-radius:4px;background:#fff;" class="p-5">
+                        <div class="flex items-center justify-between mb-3">
+                            <div>
+                                <div class="font-semibold text-sm" style="color:#1C1916;">{{ $__account->bank_name }}</div>
+                                @if ($__account->iban_masked)
+                                    <div class="text-xs mt-0.5" style="color:#7A6652;">{{ $__account->iban_masked }}</div>
+                                @endif
+                            </div>
+                            @php $__pendingSt = $__account->statements->where('import_status','processing')->count(); @endphp
+                            @if ($__pendingSt > 0)
+                                <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" style="background:#FEF9EE;color:#B45309;border:1px solid #FCD34D;">
+                                    <svg class="w-3 h-3 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                                    {{ $__pendingSt }} en cours…
+                                </span>
+                            @endif
+                        </div>
+
+                        {{-- Relevés déjà présents --}}
+                        @if ($__account->statements->count() > 0)
+                        <div class="mb-3 space-y-1">
+                            @foreach ($__account->statements->sortByDesc('created_at') as $__st)
+                            <div class="flex items-center justify-between text-xs px-3 py-1.5 rounded" style="background:#F8F4EE;color:#5C5449;">
+                                <span class="truncate max-w-[200px]" title="{{ $__st->original_filename }}">{{ $__st->original_filename }}</span>
+                                <span class="ml-2 shrink-0 font-medium" style="color:{{ $__st->import_status === 'done' ? '#059669' : '#B45309' }};">
+                                    {{ $__st->import_status }} · {{ $__st->transactions_imported }} tx
+                                </span>
+                            </div>
+                            @endforeach
+                        </div>
+                        @endif
+
+                        <form method="POST" action="{{ route('statements.store', $__account) }}" enctype="multipart/form-data" class="space-y-2">
+                            @csrf
+                            <input type="file" name="statement" required
+                                   class="block w-full text-sm px-3 py-2 rounded border"
+                                   style="border-color:#E5D9C8;background:#FDFAF5;"
+                                   accept=".pdf,.csv,.txt" />
+                            <p class="text-xs" style="color:#9C8A70;">PDF, CSV (date, label, amount, balance_after)</p>
+                            <x-primary-button type="submit">
+                                ↑ Uploader et analyser
+                            </x-primary-button>
+                        </form>
+                    </div>
+                    @endforeach
+                </div>
+
+                <div class="mt-4 flex items-center gap-2 text-sm" style="color:#9C8A70;">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    Besoin d'un autre compte ?
+                    <a href="#card-accounts" class="underline hover:text-amber-700" style="color:#C09B5E;">Ajouter un compte bancaire ↓</a>
+                </div>
+                @endif
+            </div>
+            @endif
+
             @php
                 // ── Label normalisation helper (OCR cleanup) ──────────────────
                 function cleanBankLabel(string $raw): string {
@@ -299,7 +411,7 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                     ->take(5)
                     ->values();
                 $criticalExceptional = collect($exceptional_transactions ?? [])->sortByDesc(fn ($tx) => abs((float)($tx->amount ?? 0)))->take(5)->values();
-                $criticalBeneficiaries = collect($beneficiary_concentration ?? [])->take(3)->values();
+                $criticalBeneficiaries = collect($beneficiary_concentration ?? [])->take(5)->values();
                 $aiLines = collect((array)($ai['suspicious'] ?? []))->filter(fn ($v) => is_string($v) && trim($v) !== '')->take(3)->values();
                 if ($aiLines->count() < 3) {
                     if ($topCriticalMonths->count() > 0) {
@@ -448,9 +560,12 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             @if (!empty($ai['summary']))
                                 <div class="mt-4 pt-3" style="border-top:1px solid #EDE4D0;">
                                     <div class="text-[11px] uppercase tracking-widest mb-2" style="color:#C9A84C;">Analyse détaillée</div>
-                                    <div class="text-sm" style="color:#5C5449;line-height:1.7;">{{ (string)$ai['summary'] }}</div>
+                                    @php $summaryParagraphs = array_filter(explode("\n\n", (string)$ai['summary'])); @endphp
+                                    @foreach($summaryParagraphs as $para)
+                                        <p class="text-sm" style="font-family:'Poppins',sans-serif;color:#5C5449;line-height:1.7;margin-bottom:0.75rem;">{{ trim($para) }}</p>
+                                    @endforeach
                                     @if ($aiLines->isNotEmpty())
-                                        <ul class="mt-3 space-y-1" style="font-size:0.8rem;color:#5C5449;">
+                                        <ul class="mt-3 space-y-1" style="font-family:'Poppins',sans-serif;font-size:0.8rem;color:#5C5449;">
                                             @foreach ($aiLines as $line)
                                                 <li style="padding-left:1rem;text-indent:-0.8rem;">— {{ $line }}</li>
                                             @endforeach
@@ -524,7 +639,8 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                         </ul>
                     </div>
                     <div class="stat-card" style="padding:1rem;">
-                        <div class="section-label" style="margin-bottom:0.4rem;">Top 3 bénéficiaires concentrés</div>
+                        <div class="section-label" style="margin-bottom:0.2rem;">Top 5 bénéficiaires concentrés</div>
+                        <div class="text-xs text-slate-500" style="margin-bottom:0.6rem;">Destinataires ayant reçu le plus grand total en sorties, regroupés par entité. Le pourcentage indique leur part sur l’ensemble des débits du dossier.</div>
                         <ul class="mt-2 text-sm space-y-2">
                             @forelse ($criticalBeneficiaries as $beneficiary)
                                 <li class="border border-slate-100 rounded-lg px-2 py-1">
@@ -721,7 +837,7 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                                 </button>
                                 <button type="button" onclick="openBilanConfig()" class="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-semibold" style="background:linear-gradient(135deg,#2E2A25,#1C1916);color:#E0C278;border:1px solid rgba(201,168,76,0.45);letter-spacing:0.04em;">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                                    Bilan Notaire / Avocat
+                                    Bilan Analytica
                                 </button>
                             </div>
                         </div>
@@ -2925,38 +3041,167 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                     <div x-data="{ synthOpen: false }">
                     <h3 class="font-semibold">Transactions</h3>
 
+                    {{-- ====== BARRE DE RECHERCHE RAPIDE + IA ====== --}}
+                    <div class="mt-3"
+                         x-data="{
+                            q: @js($tx_filters['q'] ?? ''),
+                            aiOpen: false,
+                            aiQuery: '',
+                            aiLoading: false,
+                            aiSuggestions: [],
+                            aiError: '',
+                            async aiSearch() {
+                                if (this.aiQuery.trim() === '') return;
+                                this.aiLoading = true;
+                                this.aiError = '';
+                                this.aiSuggestions = [];
+                                try {
+                                    const resp = await fetch('{{ route('cases.search-semantic', $case) }}', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content,
+                                            'Accept': 'application/json',
+                                        },
+                                        body: JSON.stringify({ theme: this.aiQuery })
+                                    });
+                                    if (!resp.ok) throw new Error('Erreur serveur');
+                                    const data = await resp.json();
+                                    this.aiSuggestions = data.keywords || [];
+                                    if (this.aiSuggestions.length === 0) this.aiError = 'Aucune suggestion. Essayez un autre terme.';
+                                } catch(e) {
+                                    this.aiError = 'Service IA indisponible.';
+                                } finally {
+                                    this.aiLoading = false;
+                                }
+                            },
+                            applyKeyword(kw) {
+                                this.q = kw;
+                                this.aiOpen = false;
+                                this.$nextTick(() => document.getElementById('tx-quick-search-form').submit());
+                            }
+                         }">
+                        <form id="tx-quick-search-form" method="GET" action="{{ route('cases.show', $case) }}#card-transactions" class="flex gap-2 items-stretch">
+                            @foreach (array_filter($tx_filters ?? [], fn($v, $k) => $k !== 'q' && $v !== '' && $v !== null, ARRAY_FILTER_USE_BOTH) as $fk => $fv)
+                                <input type="hidden" name="{{ $fk }}" value="{{ $fv }}">
+                            @endforeach
+                            <div class="relative flex-1">
+                                <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 text-base">🔍</div>
+                                <input type="text" name="q" id="tx-search-quick"
+                                       x-model="q"
+                                       @keydown.enter="$el.form.submit()"
+                                       placeholder="Rechercher : libellé, nom, montant, numéro de chèque…"
+                                       class="block w-full rounded-lg border border-gray-300 bg-white pl-9 pr-4 py-2.5 text-sm shadow-sm focus:border-green-500 focus:ring-green-500 focus:outline-none">
+                            </div>
+                            <button type="submit"
+                                    class="inline-flex items-center gap-1 px-4 py-2.5 rounded-lg border border-green-500 bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors shadow-sm whitespace-nowrap">
+                                Rechercher
+                            </button>
+                            <template x-if="q !== ''">
+                                <a href="{{ route('cases.show', $case) }}#card-transactions"
+                                   class="inline-flex items-center px-3 py-2.5 rounded-lg border border-gray-300 bg-white text-sm text-gray-600 hover:bg-gray-50 transition-colors">
+                                    ✕
+                                </a>
+                            </template>
+                            <button type="button"
+                                    @click="aiOpen = !aiOpen"
+                                    class="inline-flex items-center gap-1 px-3 py-2.5 rounded-lg border border-purple-300 bg-purple-50 text-purple-700 text-sm font-medium hover:bg-purple-100 transition-colors shadow-sm whitespace-nowrap"
+                                    title="Recherche intelligente : décrivez ce que vous cherchez">
+                                ✨ IA
+                            </button>
+                        </form>
+
+                        {{-- Panneau recherche sémantique IA --}}
+                        <div x-show="aiOpen" x-cloak x-transition class="mt-2 rounded-xl border border-purple-200 bg-purple-50 p-4 shadow-sm">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-sm font-semibold text-purple-900">✨ Recherche sémantique IA</span>
+                                <button type="button" @click="aiOpen = false" class="text-purple-500 hover:text-purple-800 text-xs">✕ Fermer</button>
+                            </div>
+                            <p class="text-xs text-purple-700 mb-3">Décrivez le type de dépense (ex : <em>voyage</em>, <em>voiture</em>, <em>restaurant</em>, <em>travaux</em>, <em>médecin</em>)…</p>
+                            <div class="flex gap-2">
+                                <input type="text" x-model="aiQuery"
+                                       @keydown.enter.prevent="aiSearch()"
+                                       placeholder="ex : voyage, essence, médecin…"
+                                       class="flex-1 rounded-lg border border-purple-200 px-3 py-2 text-sm bg-white focus:border-purple-500 focus:ring-purple-500 focus:outline-none">
+                                <button type="button"
+                                        @click="aiSearch()"
+                                        :disabled="aiLoading || aiQuery.trim() === ''"
+                                        class="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors">
+                                    <span x-show="!aiLoading">Trouver les mots-clés</span>
+                                    <span x-show="aiLoading" x-cloak>⏳ Recherche…</span>
+                                </button>
+                            </div>
+                            <div x-show="aiError !== ''" x-cloak class="mt-2 text-xs text-red-600" x-text="aiError"></div>
+                            <div x-show="aiSuggestions.length > 0" x-cloak class="mt-3">
+                                <div class="text-xs text-purple-700 mb-2 font-medium">Cliquez sur un mot-clé pour filtrer les transactions :</div>
+                                <div class="flex flex-wrap gap-2">
+                                    <template x-for="kw in aiSuggestions" :key="kw">
+                                        <button type="button"
+                                                @click="applyKeyword(kw)"
+                                                class="px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 text-xs font-medium hover:bg-purple-100 transition-colors cursor-pointer"
+                                                x-text="kw"></button>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {{-- ====== /BARRE DE RECHERCHE ====== --}}
+
                     <div class="mt-3 flex flex-wrap gap-2 text-xs">
+                        @php
+                            $qf = $tx_filters ?? [];
+                            $hasActiveFilter = ($qf['date_from'] ?? '') !== '' || ($qf['date_to'] ?? '') !== ''
+                                || ($qf['min_amount'] ?? '') !== '' || ($qf['kind'] ?? '') !== ''
+                                || ($qf['type'] ?? '') !== '' || ($qf['q'] ?? '') !== '';
+                            $baseCaseUrl = route('cases.show', $case);
+                            $qfClass = 'inline-flex items-center gap-1 px-3 py-1.5 rounded-md border transition-colors text-xs';
+                            $qfActive = 'border-amber-400 bg-amber-50 text-amber-800 font-semibold';
+                            $qfInactive = 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50';
+                        @endphp
                         <span class="text-gray-500 self-center font-medium">Filtres rapides :</span>
                         @if ($case->death_date)
-                            <a href="{{ route('cases.show', $case) }}?date_to={{ $case->death_date->copy()->subDay()->format('Y-m-d') }}"
-                               class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors">
+                            @php $isActiveBefore = ($qf['date_to'] ?? '') === $case->death_date->copy()->subDay()->format('Y-m-d') && ($qf['date_from'] ?? '') === ''; @endphp
+                            <a href="{{ $baseCaseUrl }}?date_to={{ $case->death_date->copy()->subDay()->format('Y-m-d') }}#card-transactions"
+                               class="{{ $qfClass }} {{ $isActiveBefore ? $qfActive : $qfInactive }}">
                                 📅 Avant décès ({{ $case->death_date->format('d/m/Y') }})
                             </a>
-                            <a href="{{ route('cases.show', $case) }}?date_from={{ $case->death_date->format('Y-m-d') }}"
-                               class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors">
+                            @php $isActiveAfter = ($qf['date_from'] ?? '') === $case->death_date->format('Y-m-d') && ($qf['date_to'] ?? '') === ''; @endphp
+                            <a href="{{ $baseCaseUrl }}?date_from={{ $case->death_date->format('Y-m-d') }}#card-transactions"
+                               class="{{ $qfClass }} {{ $isActiveAfter ? $qfActive : $qfInactive }}">
                                 📅 Après décès
                             </a>
                         @endif
-                        <a href="{{ route('cases.show', $case) }}?min_amount=5000"
-                           class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors">
+                        @php $isActive5k = ($qf['min_amount'] ?? '') === '5000' && ($qf['kind'] ?? '') === '' && ($qf['type'] ?? '') === ''; @endphp
+                        <a href="{{ $baseCaseUrl }}?min_amount=5000#card-transactions"
+                           class="{{ $qfClass }} {{ $isActive5k ? $qfActive : $qfInactive }}">
                             💳 Opérations ≥ 5 000 €
                         </a>
-                        <a href="{{ route('cases.show', $case) }}?min_amount=20000"
-                           class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors">
+                        @php $isActive20k = ($qf['min_amount'] ?? '') === '20000' && ($qf['kind'] ?? '') === '' && ($qf['type'] ?? '') === ''; @endphp
+                        <a href="{{ $baseCaseUrl }}?min_amount=20000#card-transactions"
+                           class="{{ $qfClass }} {{ $isActive20k ? $qfActive : $qfInactive }}">
                             🏦 Montants ≥ 20 000 €
                         </a>
-                        <a href="{{ route('cases.show', $case) }}?kind=cheque"
-                           class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors">
+                        @php $isActiveCheque = ($qf['kind'] ?? '') === 'cheque'; @endphp
+                        <a href="{{ $baseCaseUrl }}?kind=cheque#card-transactions"
+                           class="{{ $qfClass }} {{ $isActiveCheque ? $qfActive : $qfInactive }}">
                             📑 Chèques uniquement
                         </a>
-                        <a href="{{ route('cases.show', $case) }}?kind=cash_withdrawal"
-                           class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors">
+                        @php $isActiveCash = ($qf['kind'] ?? '') === 'cash_withdrawal'; @endphp
+                        <a href="{{ $baseCaseUrl }}?kind=cash_withdrawal#card-transactions"
+                           class="{{ $qfClass }} {{ $isActiveCash ? $qfActive : $qfInactive }}">
                             💵 Retraits espèces
                         </a>
-                        <a href="{{ route('cases.show', $case) }}?type=debit&min_amount=500"
-                           class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors">
+                        @php $isActiveDebit500 = ($qf['type'] ?? '') === 'debit' && ($qf['min_amount'] ?? '') === '500'; @endphp
+                        <a href="{{ $baseCaseUrl }}?type=debit&min_amount=500#card-transactions"
+                           class="{{ $qfClass }} {{ $isActiveDebit500 ? $qfActive : $qfInactive }}">
                             👤 Sorties > 500 €
                         </a>
+                        @if ($hasActiveFilter)
+                            <a href="{{ $baseCaseUrl }}#card-transactions"
+                               class="{{ $qfClass }} border-red-300 bg-red-50 text-red-700 hover:bg-red-100 font-medium">
+                                ✕ Réinitialiser
+                            </a>
+                        @endif
 
                         {{-- Bouton synthèse orale --}}
                         <button type="button" @click="synthOpen = !synthOpen"
@@ -3813,20 +4058,22 @@ function closeBilanConfig() {
 }
 function generateBilanFromConfig() {
     const config = {
-        inclJustif: document.getElementById('bc-justif')?.checked !== false,
-        inclAi:     document.getElementById('bc-ai')?.checked !== false,
+        inclJustif:  document.getElementById('bc-justif')?.checked !== false,
+        inclAi:      document.getElementById('bc-ai')?.checked !== false,
+        inclCharts:  document.getElementById('bc-charts')?.checked !== false,
     };
     closeBilanConfig();
     printBilanNotaire(config);
 }
 function printBilanNotaire(config) {
-    config = config || { inclJustif: true, inclAi: true };
+    config = config || { inclJustif: true, inclAi: true, inclCharts: true };
     const tpl = document.getElementById('bilan-notaire-template');
     if (!tpl) { alert('Modèle de bilan introuvable.'); return; }
     const wrapper = document.createElement('div');
     wrapper.innerHTML = tpl.innerHTML;
-    if (!config.inclJustif) wrapper.querySelectorAll('.bilan-section-justif').forEach(el => el.remove());
-    if (!config.inclAi)     wrapper.querySelectorAll('.bilan-section-ai').forEach(el => el.remove());
+    if (!config.inclJustif)  wrapper.querySelectorAll('.bilan-section-justif').forEach(el => el.remove());
+    if (!config.inclAi)      wrapper.querySelectorAll('.bilan-section-ai').forEach(el => el.remove());
+    if (!config.inclCharts)  wrapper.querySelectorAll('.bilan-section-charts').forEach(el => el.remove());
     const content = wrapper.innerHTML;
     const win = window.open('', '_blank');
     if (!win) { alert('Popup bloqué. Autorisez les popups pour ce site.'); return; }
@@ -3834,11 +4081,11 @@ function printBilanNotaire(config) {
     win.document.write(`<!doctype html><html lang="fr"><head>
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width,initial-scale=1"/>
-        <title>Bilan Notaire/Avocat – ${document.title}</title>
+        <title>Bilan Analytica – ${document.title}</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap" rel="stylesheet">
         <style>
-            @page { size: A4; margin: 14mm 16mm; }
+            @page { size: A4; margin: 10mm 8mm; }
             @media print {
                 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
                 .page-break { page-break-before: always; break-before: page; padding-top: 12mm; }
@@ -3872,7 +4119,7 @@ function exportChartSVG() {
 </script>
 
 {{-- ============================================================
-     BILAN NOTAIRE / AVOCAT — template pré-rendu côté serveur
+     BILAN ANALYTICA — template pré-rendu côté serveur
      Contenu stocké inerte dans <template>, cloné par printBilanNotaire()
      ============================================================ --}}
 <template id="bilan-notaire-template">
@@ -3915,8 +4162,8 @@ body {
     font-size: 11pt;
     line-height: 1.55;
 }
-.page { max-width: 210mm; margin: 0 auto; padding: 10mm 14mm 14mm; }
-.page-break { padding-top: 10mm; }
+.page { max-width: 210mm; margin: 0 auto; padding: 8mm 8mm 10mm; }
+.page-break { padding-top: 8mm; }
 
 /* ── Header ────────────────────────────────────────────────── */
 .doc-brand {
@@ -4130,10 +4377,10 @@ tfoot td.r { text-align: right; }
                 @foreach ($bilanYearlyTotals->take(6) as $yr)
                     <div class="yr-row">
                         <span style="font-weight:700;">{{ $yr['year'] ?? '—' }}</span>
-                        <span style="color:#2E7D32;">+{{ number_format((float)($yr['credit'] ?? 0), 0, ',', ' ') }} €</span>
-                        <span style="color:#C0392B;">−{{ number_format((float)($yr['debit'] ?? 0), 0, ',', ' ') }} €</span>
+                        <span style="color:#2E7D32;">+{{ number_format((float)($yr['credits'] ?? 0), 0, ',', ' ') }} €</span>
+                        <span style="color:#C0392B;">−{{ number_format((float)($yr['debits'] ?? 0), 0, ',', ' ') }} €</span>
                         <span style="color:#8A7E72;">
-                            @php $yrNet = (float)($yr['credit'] ?? 0) - (float)($yr['debit'] ?? 0); @endphp
+                            @php $yrNet = (float)($yr['credits'] ?? 0) - (float)($yr['debits'] ?? 0); @endphp
                             {{ $yrNet >= 0 ? '+' : '' }}{{ number_format($yrNet, 0, ',', ' ') }} €
                         </span>
                     </div>
@@ -4178,7 +4425,7 @@ tfoot td.r { text-align: right; }
         <img src="{{ asset('analytica-logo.png') }}?v={{ filemtime(public_path('analytica-logo.png')) }}" alt="Analytica" class="logo-mini">
         <div style="font-size:13pt;font-weight:300;">{{ $bilanTitle }}</div>
     </div>
-    <div style="font-size:7.5pt;color:#8A7E72;">ANALYTICA · Bilan Notaire/Avocat · p. 2</div>
+    <div style="font-size:7.5pt;color:#8A7E72;">ANALYTICA · Bilan Analytica · p. 2</div>
 </div>
 <div class="gold-bar" style="margin-bottom:4px;"></div>
 
@@ -4291,7 +4538,7 @@ tfoot td.r { text-align: right; }
         <img src="{{ asset('analytica-logo.png') }}?v={{ filemtime(public_path('analytica-logo.png')) }}" alt="Analytica" class="logo-mini">
         <div style="font-size:13pt;font-weight:300;">{{ $bilanTitle }}</div>
     </div>
-    <div style="font-size:7.5pt;color:#8A7E72;">ANALYTICA · Bilan Notaire/Avocat · p. 3</div>
+    <div style="font-size:7.5pt;color:#8A7E72;">ANALYTICA · Bilan Analytica · p. 3</div>
 </div>
 <div class="gold-bar" style="margin-bottom:4px;"></div>
 
@@ -4438,7 +4685,7 @@ tfoot td.r { text-align: right; }
         <img src="{{ asset('analytica-logo.png') }}?v={{ filemtime(public_path('analytica-logo.png')) }}" alt="Analytica" class="logo-mini">
         <div style="font-size:13pt;font-weight:300;">{{ $bilanTitle }}</div>
     </div>
-    <div style="font-size:7.5pt;color:#8A7E72;">ANALYTICA · Bilan Notaire/Avocat · p. 4</div>
+    <div style="font-size:7.5pt;color:#8A7E72;">ANALYTICA · Bilan Analytica · p. 4</div>
 </div>
 <div class="gold-bar" style="margin-bottom:4px;"></div>
 
@@ -4584,11 +4831,243 @@ tfoot td.r { text-align: right; }
 
 </div>{{-- /page-break 4 --}}
 
+{{-- ═══════════════════════════════════════════════════ --}}
+{{-- PAGE 5 — ANNEXE GRAPHIQUE                          --}}
+{{-- ═══════════════════════════════════════════════════ --}}
+<div class="page-break bilan-section-charts">
+<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #EDE4D0;padding-bottom:5px;margin-bottom:12px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+        <img src="{{ asset('analytica-logo.png') }}?v={{ filemtime(public_path('analytica-logo.png')) }}" alt="Analytica" class="logo-mini">
+        <div style="font-size:13pt;font-weight:300;">{{ $bilanTitle }}</div>
+    </div>
+    <div style="font-size:7.5pt;color:#8A7E72;">ANALYTICA · Bilan Analytica · p. 5</div>
+</div>
+<div class="gold-bar" style="margin-bottom:4px;"></div>
+
+<div class="sec">6 — Annexe graphique</div>
+<p style="font-size:8.5pt;color:#5C5449;font-style:italic;margin-bottom:14px;">Les représentations ci-dessous sont générées automatiquement à partir des données importées et constituent un support documentaire à l'analyse du dossier.</p>
+
+{{-- ── GRAPHIQUE 1 : MENSUELS CRÉDITS / DÉBITS ────────────────── --}}
+@php
+    $bcCW = 900; $bcCH = 240;
+    $bcPL = 65; $bcPR = 20; $bcPT = 18; $bcPB = 42;
+    $bcPlotW = $bcCW - $bcPL - $bcPR;
+    $bcPlotH = $bcCH - $bcPT - $bcPB;
+    $bcMonthly = collect($monthlyTotals ?? [])->values();
+    $bcMonthlyCount = $bcMonthly->count();
+    $bcMonthlyMax = max(1, (float)($monthlyMax ?? 1));
+    $bcStep = $bcMonthlyCount > 1 ? ($bcPlotW / ($bcMonthlyCount - 1)) : 0;
+    $bcTickEvery = $bcMonthlyCount > 60 ? 12 : ($bcMonthlyCount > 30 ? 6 : ($bcMonthlyCount > 18 ? 3 : 1));
+    $bcAvgC = (float)($behavioral['avg_credits'] ?? 0);
+    $bcAvgD = (float)($behavioral['avg_debits'] ?? 0);
+    $bcAvgCY = $bcPT + ($bcPlotH - (min(1, $bcAvgC / $bcMonthlyMax) * $bcPlotH));
+    $bcAvgDY = $bcPT + ($bcPlotH - (min(1, $bcAvgD / $bcMonthlyMax) * $bcPlotH));
+    $bcCreditPts = $bcMonthly->map(function($row, $i) use ($bcPL,$bcPT,$bcPlotH,$bcStep,$bcMonthlyMax) {
+        $x = $bcPL + $i * $bcStep; $y = $bcPT + ($bcPlotH - ((float)($row['credits']??0)/$bcMonthlyMax*$bcPlotH));
+        return number_format($x,1,'.',''). ','.number_format($y,1,'.','')
+;
+    })->implode(' ');
+    $bcDebitPts = $bcMonthly->map(function($row, $i) use ($bcPL,$bcPT,$bcPlotH,$bcStep,$bcMonthlyMax) {
+        $x = $bcPL + $i * $bcStep; $y = $bcPT + ($bcPlotH - ((float)($row['debits']??0)/$bcMonthlyMax*$bcPlotH));
+        return number_format($x,1,'.',''). ','.number_format($y,1,'.','')
+;
+    })->implode(' ');
+@endphp
+@if ($bcMonthlyCount >= 2)
+<div style="margin-bottom:18px;">
+    <div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#1C1916;border-left:3px solid #C9A84C;padding-left:8px;margin-bottom:4px;">a) Flux mensuel — crédits et débits</div>
+    <div style="font-size:7.5pt;color:#5C5449;margin-bottom:4px;">Période : {{ $bcMonthly->first()['month'] ?? '—' }} → {{ $bcMonthly->last()['month'] ?? '—' }} &nbsp;·&nbsp; {{ $bcMonthlyCount }} mois</div>
+    <div style="display:flex;gap:14px;font-size:7pt;color:#5C5449;margin-bottom:5px;">
+        <span style="color:#4A7C59">— Crédits</span>
+        <span style="color:#C0392B">— Débits</span>
+        <span style="color:#2D5A3D;opacity:0.8">┄ Moy. crédits</span>
+        <span style="color:#9B4040;opacity:0.8">┄ Moy. débits</span>
+    </div>
+    <svg width="100%" viewBox="0 0 {{ $bcCW }} {{ $bcCH }}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FDFAF5;">
+        @for ($g = 0; $g <= 4; $g++)
+            @php $yG = $bcPT + ($bcPlotH/4)*$g; $lv = $bcMonthlyMax*(1-$g/4); @endphp
+            <line x1="{{ $bcPL }}" y1="{{ number_format($yG,1,'.','')}}"
+                  x2="{{ $bcCW-$bcPR }}" y2="{{ number_format($yG,1,'.','')}}"
+                  stroke="#EDE4D0" stroke-width="1"/>
+            <text x="{{ $bcPL-4 }}" y="{{ number_format($yG+3,1,'.','')}}"
+                  text-anchor="end" font-size="8" fill="#8A7E72">{{ number_format($lv/1000,0,',',' ') }}k</text>
+        @endfor
+        <line x1="{{ $bcPL }}" y1="{{ $bcPT }}" x2="{{ $bcPL }}" y2="{{ $bcPT+$bcPlotH }}" stroke="#C9A84C" stroke-width="1"/>
+        <line x1="{{ $bcPL }}" y1="{{ $bcPT+$bcPlotH }}" x2="{{ $bcCW-$bcPR }}" y2="{{ $bcPT+$bcPlotH }}" stroke="#C9A84C" stroke-width="1"/>
+        {{-- Moyennes --}}
+        @if ($bcAvgC > 0)
+        <line x1="{{ $bcPL }}" y1="{{ number_format($bcAvgCY,1,'.','')}}"
+              x2="{{ $bcCW-$bcPR }}" y2="{{ number_format($bcAvgCY,1,'.','')}}"
+              stroke="#2D5A3D" stroke-width="1" stroke-dasharray="5,3" opacity="0.7"/>
+        @endif
+        @if ($bcAvgD > 0)
+        <line x1="{{ $bcPL }}" y1="{{ number_format($bcAvgDY,1,'.','')}}"
+              x2="{{ $bcCW-$bcPR }}" y2="{{ number_format($bcAvgDY,1,'.','')}}"
+              stroke="#9B4040" stroke-width="1" stroke-dasharray="5,3" opacity="0.7"/>
+        @endif
+        {{-- Courbes --}}
+        <polyline fill="none" stroke="#4A7C59" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="{{ $bcCreditPts }}"/>
+        <polyline fill="none" stroke="#C0392B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="{{ $bcDebitPts }}"/>
+        {{-- Ticks X --}}
+        @foreach ($bcMonthly as $i => $row)
+            @if ($i % $bcTickEvery === 0 || $i === $bcMonthlyCount-1)
+                @php $xT = $bcPL + $i * $bcStep; @endphp
+                <text x="{{ number_format($xT,1,'.','')}}"
+                      y="{{ $bcCH-10 }}" text-anchor="middle" font-size="8" fill="#5C5449">{{ $row['month'] }}</text>
+            @endif
+            {{-- Anomaly marks --}}
+            @if (!empty($row['debit_anomaly']))
+                @php $xA=$bcPL+$i*$bcStep; $yA=$bcPT+($bcPlotH-((float)($row['debits']??0)/$bcMonthlyMax*$bcPlotH)); @endphp
+                <circle cx="{{ number_format($xA,1,'.','')}}"
+                        cy="{{ number_format($yA,1,'.','')}}"
+                        r="4" fill="none" stroke="#C0392B" stroke-width="1.5"/>
+            @endif
+        @endforeach
+    </svg>
+</div>
+@endif
+
+{{-- ── GRAPHIQUE 2 : PICS EXCEPTIONNELS ────────────────────── --}}
+@php
+    $bcExcData = collect($exceptional_transactions ?? [])
+        ->groupBy(fn($t) => optional($t->date)->format('Y-m') ?? 'N/A')
+        ->map(fn($g) => $g->sum(fn($t) => abs((float)($t->amount??0))))
+        ->sortKeys();
+    $bcExcMonths = $bcExcData->keys()->values();
+    $bcExcAmounts = $bcExcData->values();
+    $bcExcCount = $bcExcMonths->count();
+    $bcExcMax = max(1, (float)$bcExcAmounts->max());
+    $bcEW = 900; $bcEH = 200;
+    $bcEPL = 75; $bcEPR = 20; $bcEPT = 14; $bcEPB = 40;
+    $bcEPlotW = $bcEW - $bcEPL - $bcEPR;
+    $bcEPlotH = $bcEH - $bcEPT - $bcEPB;
+    $bcEStep = $bcExcCount > 0 ? ($bcEPlotW / $bcExcCount) : 1;
+@endphp
+@if ($bcExcCount > 0)
+<div style="margin-bottom:18px;">
+    <div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#1C1916;border-left:3px solid #C9A84C;padding-left:8px;margin-bottom:4px;">b) Analyse des pics exceptionnels par mois</div>
+    <div style="font-size:7.5pt;color:#5C5449;margin-bottom:4px;">Montant cumulé par mois des transactions ≥ {{ number_format((float)($exceptional_threshold??0),0,',',' ') }} €. Barres foncées = mois dépassant 75 % du pic maximal.</div>
+    <svg width="100%" viewBox="0 0 {{ $bcEW }} {{ $bcEH }}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FDFAF5;">
+        @foreach ([0,0.25,0.5,0.75,1] as $fr)
+            @php $yG=$bcEPT+$bcEPlotH*(1-$fr); $lv=$bcExcMax*$fr; @endphp
+            <line x1="{{ $bcEPL }}" y1="{{ number_format($yG,1,'.','')}}"
+                  x2="{{ $bcEW-$bcEPR }}" y2="{{ number_format($yG,1,'.','')}}"
+                  stroke="#EDE4D0" stroke-width="1"/>
+            <text x="{{ $bcEPL-4 }}" y="{{ number_format($yG+3,1,'.','')}}"
+                  text-anchor="end" font-size="8" fill="#8A7E72">{{ number_format($lv/1000,0,',',' ') }}k</text>
+        @endforeach
+        @foreach ($bcExcMonths as $i => $month)
+            @php
+                $amt = (float)($bcExcAmounts[$i]??0);
+                $bH = $bcEPlotH * ($amt/$bcExcMax);
+                $bX = $bcEPL + ($i+0.5)*$bcEStep;
+                $bW = max(3, $bcEStep*0.62);
+                $bY = $bcEPT + $bcEPlotH - $bH;
+                $isH = $amt > $bcExcMax*0.75;
+            @endphp
+            <rect x="{{ number_format($bX-$bW/2,1,'.','')}}"
+                  y="{{ number_format($bY,1,'.','')}}"
+                  width="{{ number_format($bW,1,'.','')}}"
+                  height="{{ number_format(max(1,$bH),1,'.','')}}"
+                  fill="{{ $isH ? '#9B7A2A' : '#C9A84C' }}" rx="2">
+                <title>{{ $month }} : {{ number_format($amt,0,',',' ') }} €</title>
+            </rect>
+            @if ($bcExcCount <= 36 || $i % 3 === 0)
+                <text x="{{ number_format($bX,1,'.','')}}"
+                      y="{{ $bcEPT+$bcEPlotH+14 }}"
+                      text-anchor="middle" font-size="8" fill="#5C5449">{{ substr($month,2) }}</text>
+            @endif
+        @endforeach
+        <line x1="{{ $bcEPL }}" y1="{{ $bcEPT+$bcEPlotH }}"
+              x2="{{ $bcEW-$bcEPR }}" y2="{{ $bcEPT+$bcEPlotH }}"
+              stroke="#C9A84C" stroke-width="1"/>
+    </svg>
+</div>
+@endif
+
+{{-- ── GRAPHIQUE 3 : RETRAITS ESPÈCES ──────────────────────── --}}
+@php
+    $bcCashRows = collect($cash_monthly_totals ?? [])->values();
+    $bcCashCount = $bcCashRows->count();
+    $bcCashMax = max(1, (float)$bcCashRows->max('total'));
+    $bcAvgCash = (float)($cash_monthly_average ?? 0);
+    $bcCashPeak = (float)($cash_peak_threshold ?? 0);
+    $bcCW2 = 900; $bcCH2 = 200;
+    $bcCPL2 = 65; $bcCPR2 = 20; $bcCPT2 = 14; $bcCPB2 = 40;
+    $bcCPlotW2 = $bcCW2 - $bcCPL2 - $bcCPR2;
+    $bcCPlotH2 = $bcCH2 - $bcCPT2 - $bcCPB2;
+    $bcCStep2 = $bcCashCount > 0 ? ($bcCPlotW2 / $bcCashCount) : 1;
+    $bcCBarW2 = max(4, min(22, $bcCStep2 * 0.62));
+    $bcCTickEv2 = $bcCashCount > 48 ? 6 : ($bcCashCount > 24 ? 3 : 1);
+    $bcCAvgY2 = $bcCPT2 + ($bcCPlotH2 - (min(1,$bcAvgCash/$bcCashMax)*$bcCPlotH2));
+@endphp
+@if ($bcCashCount > 0)
+<div style="margin-bottom:14px;">
+    <div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#1C1916;border-left:3px solid #C9A84C;padding-left:8px;margin-bottom:4px;">c) Retraits espèces — mensuel, moyenne et pics</div>
+    <div style="font-size:7.5pt;color:#5C5449;margin-bottom:4px;">
+        Moyenne mensuelle : {{ number_format($bcAvgCash,0,',',' ') }} € &nbsp;·&nbsp;
+        Seuil pic : {{ number_format($bcCashPeak,0,',',' ') }} € &nbsp;·&nbsp;
+        Pic max : {{ $cash_peak_month['month'] ?? '—' }} ({{ number_format((float)($cash_peak_month['total']??0),0,',',' ') }} €)
+    </div>
+    <div style="display:flex;gap:14px;font-size:7pt;color:#5C5449;margin-bottom:5px;">
+        <span><rect/>■ <span style="color:#9CA3AF">Mois standard</span></span>
+        <span><rect/>■ <span style="color:#F97316">Pic (≥ seuil)</span></span>
+        <span><span style="color:#2563EB">┄</span> Moyenne mensuelle</span>
+    </div>
+    <svg width="100%" viewBox="0 0 {{ $bcCW2 }} {{ $bcCH2 }}" xmlns="http://www.w3.org/2000/svg" style="display:block;background:#FDFAF5;">
+        @for ($g = 0; $g <= 4; $g++)
+            @php $yG2=$bcCPT2+($bcCPlotH2/4*$g); $lv2=$bcCashMax*(1-$g/4); @endphp
+            <line x1="{{ $bcCPL2 }}" y1="{{ number_format($yG2,1,'.','')}}"
+                  x2="{{ $bcCW2-$bcCPR2 }}" y2="{{ number_format($yG2,1,'.','')}}"
+                  stroke="#EDE4D0" stroke-width="1"/>
+            <text x="{{ $bcCPL2-4 }}" y="{{ number_format($yG2+3,1,'.','')}}"
+                  text-anchor="end" font-size="8" fill="#8A7E72">{{ number_format($lv2/1000,0,',',' ') }}k</text>
+        @endfor
+        <line x1="{{ $bcCPL2 }}" y1="{{ $bcCPT2 }}" x2="{{ $bcCPL2 }}" y2="{{ $bcCPT2+$bcCPlotH2 }}" stroke="#9CA3AF" stroke-width="1"/>
+        <line x1="{{ $bcCPL2 }}" y1="{{ $bcCPT2+$bcCPlotH2 }}" x2="{{ $bcCW2-$bcCPR2 }}" y2="{{ $bcCPT2+$bcCPlotH2 }}" stroke="#9CA3AF" stroke-width="1"/>
+        <line x1="{{ $bcCPL2 }}" y1="{{ number_format($bcCAvgY2,1,'.','')}}"
+              x2="{{ $bcCW2-$bcCPR2 }}" y2="{{ number_format($bcCAvgY2,1,'.','')}}"
+              stroke="#2563EB" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.85"/>
+        <text x="{{ $bcCW2-$bcCPR2-2 }}" y="{{ number_format($bcCAvgY2-3,1,'.','')}}"
+              text-anchor="end" font-size="8" fill="#2563EB" opacity="0.85">moy.</text>
+        @foreach ($bcCashRows as $i => $row)
+            @php
+                $ct=(float)($row['total']??0);
+                $cBH=max(0.5,$bcCPlotH2*($ct/$bcCashMax));
+                $cX=$bcCPL2+($i*$bcCStep2)+max(0,($bcCStep2-$bcCBarW2)/2);
+                $cY=$bcCPT2+$bcCPlotH2-$cBH;
+                $cPk=!empty($row['is_peak']);
+            @endphp
+            <rect x="{{ number_format($cX,1,'.','')}}"
+                  y="{{ number_format($cY,1,'.','')}}"
+                  width="{{ number_format($bcCBarW2,1,'.','')}}"
+                  height="{{ number_format($cBH,1,'.','')}}"
+                  fill="{{ $cPk ? '#F97316' : '#9CA3AF' }}" rx="2">
+                <title>{{ $row['month']??'' }} · {{ number_format($ct,0,',',' ') }} €{{ $cPk?' · pic':'' }}</title>
+            </rect>
+            @if ($i % $bcCTickEv2 === 0 || $i === $bcCashCount-1)
+                @php $xTk=$bcCPL2+($i*$bcCStep2)+$bcCStep2/2; @endphp
+                <text x="{{ number_format($xTk,1,'.','')}}"
+                      y="{{ $bcCH2-10 }}" text-anchor="middle" font-size="8" fill="#5C5449">{{ $row['month']??'' }}</text>
+            @endif
+        @endforeach
+    </svg>
+</div>
+@endif
+
+{{-- Pied de page 5 --}}
+<div class="bilan-footer">
+    <div class="bilan-footer-text"><strong>Analytica</strong> — Les représentations graphiques sont générées automatiquement à partir des données importées et sont fournies à titre documentaire.</div>
+    <div class="bilan-footer-right"><strong>CONFIDENTIEL</strong><br>Analytica-1.0</div>
+</div>
+
+</div>{{-- /page-break 5 --}}
+
 </div>{{-- /page --}}
 </template>
 
 {{-- ============================================================
-     MODAL DE CONFIGURATION — BILAN NOTAIRE / AVOCAT
+     MODAL DE CONFIGURATION — BILAN ANALYTICA
      ============================================================ --}}
 <div id="bilan-config-modal" class="hidden fixed inset-0 z-50" style="display:none;align-items:center;justify-content:center;background:rgba(28,25,22,0.72);">
     <div style="background:#fff;border:1px solid rgba(201,168,76,0.55);max-width:560px;width:95%;max-height:90vh;overflow-y:auto;padding:26px 28px 22px;box-shadow:0 24px 64px rgba(0,0,0,0.38);">
@@ -4596,7 +5075,7 @@ tfoot td.r { text-align: right; }
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
             <div>
                 <div style="font-size:7.5pt;letter-spacing:0.18em;text-transform:uppercase;color:#8A7E72;font-family:Georgia,serif;">Analytica &nbsp;·&nbsp; <span style="color:#C9A84C;font-weight:700;">Configuration</span></div>
-                <div style="font-family:'Cormorant Garamond',Georgia,serif;font-size:18pt;font-weight:300;color:#1C1916;line-height:1.1;margin-top:4px;">Bilan Notaire / Avocat</div>
+                <div style="font-family:'Cormorant Garamond',Georgia,serif;font-size:18pt;font-weight:300;color:#1C1916;line-height:1.1;margin-top:4px;">Bilan Analytica</div>
             </div>
             <button type="button" onclick="closeBilanConfig()" style="background:none;border:none;font-size:22pt;color:#8A7E72;cursor:pointer;line-height:1;padding:0;">&times;</button>
         </div>
@@ -4617,6 +5096,9 @@ tfoot td.r { text-align: right; }
                 </label>
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
                     <input type="checkbox" id="bc-justif" checked> Page 4 — Demande de justificatifs
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                    <input type="checkbox" id="bc-charts" checked> Page 5 — Annexe graphique
                 </label>
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
                     <input type="checkbox" id="bc-ai" {{ $ai ? 'checked' : '' }}> Analyse algorithmique

@@ -3,15 +3,27 @@
 <head>
     <meta charset="utf-8">
     <style>
-        body { font-family: DejaVu Sans, sans-serif; font-size: 11px; color: #111827; margin: 18px; }
-        h1 { font-size: 20px; margin: 0; }
-        h2 { font-size: 14px; margin: 18px 0 8px 0; }
-        h3 { font-size: 12px; margin: 12px 0 6px 0; }
+        @font-face {
+            font-family: 'Poppins';
+            font-style: normal;
+            font-weight: 400;
+            src: url('{{ $poppinsRegularPath }}') format('truetype');
+        }
+        @font-face {
+            font-family: 'Poppins';
+            font-style: normal;
+            font-weight: 600;
+            src: url('{{ $poppinsSemiBoldPath }}') format('truetype');
+        }
+        body { font-family: 'Poppins', DejaVu Sans, sans-serif; font-size: 11px; color: #111827; margin: 18px; }
+        h1 { font-size: 20px; margin: 0; font-weight: 600; }
+        h2 { font-size: 14px; margin: 18px 0 8px 0; font-weight: 600; }
+        h3 { font-size: 12px; margin: 12px 0 6px 0; font-weight: 600; }
         p { margin: 4px 0; }
         .muted { color: #6b7280; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #e5e7eb; padding: 6px; vertical-align: top; }
-        th { background: #f3f4f6; text-align: left; font-weight: 700; }
+        th { background: #f3f4f6; text-align: left; font-weight: 600; }
         .right { text-align: right; }
         .header { border-bottom: 2px solid #111827; padding-bottom: 10px; margin-bottom: 10px; }
         .kpi-grid { width: 100%; margin-top: 8px; }

@@ -1635,15 +1635,27 @@ class CaseController extends Controller
                 $case->load(['bankAccounts.statements']);
                 $accountIds = $case->bankAccounts()->pluck('id');
                 $max = (int) config('analytica.ai.max_transactions', 300);
+                $highValueThresholdAi = 20000.0;
 
-                $transactions = Transaction::query()
+                $cols = ['id', 'date', 'amount', 'type', 'kind', 'origin', 'destination', 'motif', 'cheque_number', 'label', 'normalized_label', 'anomaly_score'];
+
+                // 300 most recent transactions
+                $recentRows = Transaction::query()
                     ->whereIn('bank_account_id', $accountIds)
                     ->orderByDesc('date')
                     ->orderByDesc('id')
                     ->limit($max)
-                    ->get([
-                        'date', 'amount', 'type', 'kind', 'origin', 'destination', 'motif', 'cheque_number', 'label', 'normalized_label', 'anomaly_score',
-                    ])
+                    ->get($cols);
+
+                // All high-value transactions (any date) not already in the recent batch
+                $recentIds = $recentRows->pluck('id');
+                $highValueRows = Transaction::query()
+                    ->whereIn('bank_account_id', $accountIds)
+                    ->whereRaw('ABS(amount) >= ?', [$highValueThresholdAi])
+                    ->whereNotIn('id', $recentIds)
+                    ->get($cols);
+
+                $transactions = $recentRows->concat($highValueRows)
                     ->map(function ($t) {
                         return [
                             'date' => optional($t->date)->format('Y-m-d'),
@@ -2514,6 +2526,26 @@ class CaseController extends Controller
                 continue;
             }
 
+            // Check exclusion tokens first — if any match, skip this cluster
+            $clusterExcludes = collect((array) ($cluster['exclude_tokens'] ?? []))
+                ->map(fn ($v) => Normalization::normalizeLabel((string) $v))
+                ->filter(fn ($v) => $v !== '')
+                ->values()
+                ->all();
+
+            if (!empty($clusterExcludes)) {
+                $isExcluded = false;
+                foreach ($clusterExcludes as $excToken) {
+                    if (in_array($excToken, $tokens, true) || str_contains($normalized, $excToken)) {
+                        $isExcluded = true;
+                        break;
+                    }
+                }
+                if ($isExcluded) {
+                    continue;
+                }
+            }
+
             $matches = 0;
             foreach ($clusterTokens as $clusterToken) {
                 if (in_array($clusterToken, $tokens, true) || str_contains($normalized, $clusterToken)) {
@@ -2551,7 +2583,7 @@ class CaseController extends Controller
             'q' => (string) $request->query('q', ''),
             'score_min' => (string) $request->query('score_min', ''),
             'bank_name' => (string) $request->query('bank_name', ''),
-            'account_profile' => (string) $request->query('account_profile', 'joint'),
+            'account_profile' => (string) $request->query('account_profile', ''),
             'bank_account_id' => (string) $request->query('bank_account_id', ''),
         ];
     }

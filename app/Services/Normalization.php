@@ -44,6 +44,15 @@ class Normalization
         $label = preg_replace("/\\bAnthon'y?\\b/iu", 'Anthony', $label) ?? $label;
         $label = preg_replace("/\\bImmob'l(?:ier|'er)?\\b/iu", 'Immobilier', $label) ?? $label;
 
+        // ── OCR repair: accented vowel substitutions in specific known words ──
+        // OCR sometimes reads 'i' as è/ê/ë inside words (especially with PDF encoding).
+        $label = preg_replace('/\bBUS[èêëéì]NESS\b/iu', 'Business', $label) ?? $label;
+        $label = preg_replace('/\bMA[ïëÏ]SON\b/iu', 'Maison', $label) ?? $label;
+        $label = preg_replace('/\bSIN[èêëéì]STRE\b/iu', 'Sinistre', $label) ?? $label;
+        $label = preg_replace('/\bMUTUAL[èêëéì]STE\b/iu', 'Mutualiste', $label) ?? $label;
+        $label = preg_replace('/\bTRAVA[ïëÏ]LLEUR\b/iu', 'Travailleur', $label) ?? $label;
+        $label = preg_replace('/\bG[èêëéÈÊÉ]RALDINE\b/iu', 'Geraldine', $label) ?? $label;
+
         // ── OCR dictionary: word-level corrections for persistent misreads ──
         $label = self::applyOcrDictionary($label);
 
@@ -126,6 +135,22 @@ class Normalization
             'PUILOUB:ER'    => 'PUILOUBIER',
             'PU:LOUBIER'    => 'PUILOUBIER',
             'PUILOUBIER'    => 'PUILOUBIER',  // correct
+            // ── OCR accented letter substitutions ──
+            'MAÏSON'        => 'MAISON',
+            'MAËSON'        => 'MAISON',
+            'MASON'         => 'MAISON',   // OCR drop of first vowel in MAISON
+            'TRAVALLEUR'    => 'TRAVAILLEUR',
+            'TRAVALLEURS'   => 'TRAVAILLEURS',
+            'MUTUALESTE'    => 'MUTUALISTE',
+            'MUTUALÈSTE'    => 'MUTUALISTE',
+            'SINÈSTRE'      => 'SINISTRE',
+            'SINESTRE'      => 'SINISTRE',
+            'SINSTRE'       => 'SINISTRE',
+            'REMUNERATEON'  => 'REMUNERATION',
+            'RÉMUNÉRATION'  => 'REMUNERATION',
+            'REMUNERATON'   => 'REMUNERATION',
+            'BUSENESS'      => 'BUSINESS',
+            'BUSINES'       => 'BUSINESS',
         ];
 
         foreach ($dict as $wrong => $right) {
@@ -157,6 +182,13 @@ class Normalization
         // Repair OCR misreads of known mining institutions.
         // "CANSS MENES" / "CANSS MENES" → "CANSS MINES"  (E lu à la place de I)
         $label = preg_replace('/\bCANSS\s+M[EE]N[EE]S\b/', 'CANSS MINES', $label) ?? $label;
+
+        // Post-ASCII-translit fixes (applied after iconv stripped accents)
+        $label = preg_replace('/\bBUSeNESS\b/', 'BUSINESS', $label) ?? $label;
+        $label = preg_replace('/\bMAeSON\b/', 'MAISON', $label) ?? $label;
+        $label = preg_replace('/\bSINeSTRE\b/', 'SINISTRE', $label) ?? $label;
+        $label = preg_replace('/\bMUTUALeSTE\b/', 'MUTUALISTE', $label) ?? $label;
+        $label = preg_replace('/\bTRAVALLEUR\b/', 'TRAVAILLEUR', $label) ?? $label;
         // "MM AG RC ARRCO" → "MM AGRC ARRCO" (espace parasite dans l'acronyme)
         $label = preg_replace('/\bAG\s+RC\b/', 'AGRC', $label) ?? $label;
         $label = preg_replace('/\bAGE\s+RC\b/', 'AGERC', $label) ?? $label;

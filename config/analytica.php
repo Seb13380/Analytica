@@ -37,12 +37,16 @@ return [
     ],
 
     'ai' => [
-        'enabled' => (bool) env('ANALYTICA_AI_ENABLED', false),
-        'auto_after_case_analysis' => (bool) env('ANALYTICA_AI_AUTO_AFTER_CASE_ANALYSIS', true),
-        'openai_base_url' => env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
-        'openai_model' => env('ANALYTICA_AI_MODEL', 'gpt-4.1-mini'),
-        'max_transactions' => (int) env('ANALYTICA_AI_MAX_TRANSACTIONS', 300),
-        'timeout_seconds' => (int) env('ANALYTICA_AI_TIMEOUT', 45),
+        'enabled'                    => (bool) env('ANALYTICA_AI_ENABLED', false),
+        'auto_after_case_analysis'   => (bool) env('ANALYTICA_AI_AUTO_AFTER_CASE_ANALYSIS', true),
+        'openai_base_url'            => env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+        'openai_model'               => env('ANALYTICA_AI_MODEL', 'gpt-4.1-mini'),
+        'max_transactions'           => (int) env('ANALYTICA_AI_MAX_TRANSACTIONS', 300),
+        'timeout_seconds'            => (int) env('ANALYTICA_AI_TIMEOUT', 45),
+        // Enrichissement des libellés OCR à l'import (origin/destination/motif/kind)
+        'enricher_enabled'           => (bool) env('ANALYTICA_AI_ENRICHER_ENABLED', false),
+        'enricher_model'             => env('ANALYTICA_AI_ENRICHER_MODEL', 'gpt-4.1-mini'),
+        'enricher_timeout_seconds'   => (int) env('ANALYTICA_AI_ENRICHER_TIMEOUT', 30),
     ],
 
     'beneficiary_alias_clusters' => [
@@ -55,6 +59,9 @@ return [
             'label' => 'Me MILLIET Géraldine (notaire)',
             'tokens' => ['MILLIET'],
             'min_match' => 1,
+            // Exclure les marchands dont le nom contient MILLIET sans rapport avec le notaire
+            // (ex: "PHARMA MOULIERE MILLIET" = pharmacie Moulière, pas le notaire)
+            'exclude_tokens' => ['PHARMA', 'MOULIERE'],
             'query' => 'MILLIET GERALDINE notaire',
         ],
         [

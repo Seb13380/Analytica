@@ -28,41 +28,82 @@ class AiAssistant
         $timeout = (int) config('analytica.ai.timeout_seconds', 45);
 
         $system = <<<TXT
-Tu es l'assistant d'analyse bancaire d'Analytica.
-Objectif: produire une lecture d'expert, factuelle, neutre et argumentée du dossier (sans accusation), avec hypothèses vérifiables.
-Tu dois rapprocher les bénéficiaires quand les libellés suggèrent la même entité (ex: variations orthographiques, nom marital/naissance, assureur et sinistre incendie/feu).
-Proposer des filtres concrets (période, montants, catégories: transfer/cheque/cash_withdrawal/card).
+Tu es un expert en analyse forensique bancaire au service d'un notaire ou d'un avocat.
+Ton rôle: analyser les flux financiers d'un dossier successoral ou judiciaire pour détecter des anomalies, des comportements suspects ou des incohérences, et formuler des hypothèses vérifiables.
+
+MÉTHODE D'ANALYSE:
+1. Identifier les flux inhabituels (montants, fréquences, bénéficiaires) par rapport au profil global
+2. Rapprocher les contreparties similaires (variantes orthographiques OCR, noms mariés/naissance)
+3. Analyser la chronologie: séquences significatives (gros crédit suivi de retraits, virements répétés fractionnés)
+4. Distinguer les flux réguliers (salaires, retraites, loyers) des flux exceptionnels
+5. Signaler les manques de justificatifs probables pour les gros flux
+
+RÈGLES DE RAISONNEMENT:
+- Un virement reçu d'une notaire suivi d'un remboursement 7j après = vente immobilière + plus-value (normal)
+- Des virements fractionnés répétés vers un même bénéficiaire = possible contournement seuil
+- Un gros retrait espèces sans justificatif = point d'attention UNIQUEMENT s'il a lieu juste avant ou juste après la date de décès (fenêtre ±60 jours). Hors de cette période, les retraits espèces ne nécessitent PAS de justificatif.
+- Des virements internes entre comptes du même titulaire ≠ sorties patrimoniales
+- "TRAVAUX" + montants > 10 000€ sans devis/facture = vérification recommandée
+- Des crédits récurrents de même montant = revenu régulier probable (pension, loyer)
+- Une contrepartie qui reçoit beaucoup sans jamais verser = bénéficiaire unilatéral (à justifier)
+- Maître MILLET (ou MILLET notaire) : un unique virement correspond au remboursement de plus-value immobilière — opération normale, ne pas demander de justificatif supplémentaire
+- Chèques (kind=cheque) : ne demander de justificatif QUE si le montant unitaire est >= 7 000€. En dessous de 7 000€, pas de justificatif demandé.
+- Virements (kind=transfer ou virement) : ne signaler comme suspect et demander justificatif QUE si le montant est >= 5 000€. Un virement de 1 000€ ou moins ne nécessite aucune mention.
+- Paiements par carte (kind=card) : ne pas signaler comme "paiements par carte élevés" sauf si la transaction n'est pas un virement mal catégorisé — vérifier le libellé. Un libellé "VIR" ou "VIREMENT" avec kind=card = erreur de catégorie, traiter comme virement.
+
 Réponds STRICTEMENT en JSON valide avec les clés:
-- summary: string
-- suspicious: array of strings (points d'attention)
-- filters: object (champs possibles: date_from,date_to,min_amount,max_amount,type,kind)
-- raw: string (optionnel: notes)
-Rédige en français clair, court et factuel.
-Le champ summary doit être une synthèse experte et actionnable en 5 à 8 phrases, avec éléments quantifiés quand disponibles.
-Quand pertinent, formule les points dans suspicious en commençant par des formulations de ce style:
-- "Augmentation significative ..."
-- "Concentration anormale ..."
-- "Multiplication de virements fractionnés ..."
-Ne fabrique pas de transactions.
+- summary: array of 3 strings (tableau JSON de 3 chaînes). Élément 0: profil global — période analysée, total crédits, total débits, épargne nette, revenus réguliers identifiés (2-3 phrases). Élément 1: événements financiers majeurs chronologiques — nommer chaque contrepartie importante avec montant exact (2-3 phrases). Élément 2: conclusion — uniquement les points nécessitant des justificatifs avec dates et montants (2-3 phrases). PAS de commentaire hors du tableau.
+- suspicious: array of strings (points d'attention précis avec montants et dates)
+- filters: object (champs: date_from, date_to, min_amount, max_amount, type, kind)
+- raw: string (optionnel: observations complémentaires)
+
+Le tableau "summary" doit contenir EXACTEMENT 3 éléments:
+- summary[0]: profil global (revenus, dépenses, épargne nette, période, revenus réguliers)
+- summary[1]: événements financiers majeurs chronologiques (nommer contreparties avec montants)
+- summary[2]: conclusion — uniquement les points nécessitant des justificatifs
+
+Le champ "suspicious" doit contenir des formulations précises comme:
+- "Virement de 135 512€ vers NOVAK (2021-05-04) sans justificatif apparent — demander facture travaux"
+- "Série de 16 virements vers Liliane GIORDANO/NOVAK (total 161 439€) — flux unilatéral sortant"
+- "Chèque de X€ le Y — demander justificatif" (UNIQUEMENT si X >= 7 000€)
+- "Retrait espèces de X€ le Y — contexte sensible (proche du décès)" (UNIQUEMENT si dans les 60 jours avant/après le décès)
+- NE PAS mentionner les retraits espèces hors période sensible
+- NE PAS demander de justificatif pour les virements < 5 000€
+- NE PAS mentionner "paiements par carte" si le libellé contient "VIR" ou "VIREMENT" (erreur de catégorie OCR)
+Ne fabrique pas de transactions. Reste factuel et neutre.
+Rédige en français professionnel.
+
+ATTENTION CRITIQUE:
+- Le champ flux_resume.exceptional_ops contient TOUTES les opérations >= 20 000€ avec leur kind exact (cheque, virement, cash_withdrawal, etc.).
+- Le champ flux_resume.by_kind_summary donne pour chaque kind: count, total, max_single.
+- Tu DOIS utiliser ces champs pour rapporter les montants exacts. Ne déduis jamais les montants depuis d'autres sources.
+- Si by_kind_summary contient kind="cheque" avec max_single=30000, tu dois écrire "chèques jusqu'à 30 000€", pas 1 970€.
+- Cite le montant max réel de chaque catégorie depuis by_kind_summary.max_single.
+- VIREMENT MAÎTRE MILLET: un seul virement vers Maître Millet = remboursement de plus-value immobilière. Opération normale, ne pas émettre d'alerte.
+- CHÈQUES: ne demander de justificatif que pour les chèques >= 7 000€. Les chèques inférieurs à 7 000€ ne nécessitent aucune mention.
+- RETRAITS ESPÈCES: ne signaler que les retraits dans les 60 jours avant/après la date de décès du dossier. Les autres retraits sont normaux.
+- VIREMENTS: seuil de signalement = 5 000€ minimum. Ignorer les virements < 5 000€.
+- KIND=CARD + LIBELLÉ "VIR": si exceptional_ops contient un flux kind=card mais dont le label contient "VIR" ou "VIREMENT", traiter comme virement et ne pas écrire "paiement par carte".
 TXT;
 
         $caseMeta = [
             'case' => [
-                'id' => $case->getKey(),
-                'title' => $case->title,
-                'deceased_name' => $case->deceased_name,
-                'death_date' => $case->death_date?->format('Y-m-d'),
-                'analysis_period_start' => $case->analysis_period_start?->format('Y-m-d'),
-                'analysis_period_end' => $case->analysis_period_end?->format('Y-m-d'),
-                'status' => $case->status,
-                'global_score' => $case->global_score,
+                'id'                     => $case->getKey(),
+                'title'                  => $case->title,
+                'deceased_name'          => $case->deceased_name,
+                'death_date'             => $case->death_date?->format('Y-m-d'),
+                'analysis_period_start'  => $case->analysis_period_start?->format('Y-m-d'),
+                'analysis_period_end'    => $case->analysis_period_end?->format('Y-m-d'),
+                'status'                 => $case->status,
+                'global_score'           => $case->global_score,
             ],
-            'context' => $context,
+            'flux_resume' => $this->buildFluxResume($context),
+            'context'     => $context,
         ];
 
         $user = trim($userPrompt) !== ''
-            ? "Demande utilisateur: {$userPrompt}"
-            : "Donne un résumé et des filtres utiles pour explorer les transactions.";
+            ? "Demande utilisateur: {$userPrompt}\n\nAnalyse le dossier en t'appuyant sur les données flux_resume et context fournis."
+            : "Réalise une analyse forensique complète du dossier. Utilise les données flux_resume pour nommer précisément les contreparties et leurs montants.";
 
         try {
             $resp = Http::baseUrl($baseUrl)
@@ -95,8 +136,16 @@ TXT;
             return $this->buildLocalFallbackAnalysis($context, 'Réponse IA non interprétable.', $content);
         }
 
+        // summary can be an array of paragraphs (preferred) or a plain string (fallback)
+        $rawSummary = $decoded['summary'] ?? '';
+        if (is_array($rawSummary)) {
+            $summary = implode("\n\n", array_map('trim', $rawSummary));
+        } else {
+            $summary = (string) $rawSummary;
+        }
+
         return [
-            'summary' => (string) ($decoded['summary'] ?? ''),
+            'summary' => $summary,
             'suspicious' => array_values(array_filter((array) ($decoded['suspicious'] ?? []), fn ($v) => is_string($v) && $v !== '')),
             'filters' => is_array($decoded['filters'] ?? null) ? $decoded['filters'] : [],
             'raw' => (string) ($decoded['raw'] ?? ''),
@@ -194,29 +243,32 @@ TXT;
         $strictTopBenefIdentity = $this->strictGiordanoLabelByKey($topBenefKey);
         $topBenefLabel = $strictTopBenefIdentity ?? ($topBenefCluster['label'] ?? ($topBenefKey === 'INCONNU' ? 'Inconnu' : mb_substr($topBenefKey, 0, 90)));
 
-        $summaryParts = [
-            'Conclusion d\'analyse bancaire (mode local objectif, sans appel OpenAI).',
+        $para1Parts = [
             sprintf('Sur les %d opérations analysées, les flux totaux sont de %.2f € en crédits et %.2f € en débits, soit un solde net de %.2f €.', $transactions->count(), $credits, $debits, $net),
         ];
 
+        $para2Parts = [];
+
         if ($highValues->count() > 0) {
-            $summaryParts[] = sprintf('Les montants unitaires élevés (>= %.0f €) représentent %d opération(s), ce qui justifie un contrôle prioritaire des justificatifs associés.', $highValueThreshold, $highValues->count());
+            $para2Parts[] = sprintf('Les montants unitaires élevés (>= %.0f €) représentent %d opération(s), ce qui justifie un contrôle prioritaire des justificatifs associés.', $highValueThreshold, $highValues->count());
         }
 
         if ($cashPeakMonth) {
-            $summaryParts[] = sprintf('Les retraits espèces montrent une moyenne mensuelle de %.2f € avec un pic à %.2f € en %s, à recontextualiser avec les événements du dossier.', $cashAvg, $cashPeakAmount, $cashPeakMonth);
+            $para2Parts[] = sprintf('Les retraits espèces montrent une moyenne mensuelle de %.2f € avec un pic à %.2f € en %s, à recontextualiser avec les événements du dossier.', $cashAvg, $cashPeakAmount, $cashPeakMonth);
         }
 
         if (is_array($maxDebitMonth)) {
-            $summaryParts[] = sprintf('Le mois le plus chargé en débits est %s (%.2f €), indiquant une concentration temporelle des sorties.', (string) ($maxDebitMonth['month'] ?? '—'), (float) ($maxDebitMonth['debits'] ?? 0));
+            $para2Parts[] = sprintf('Le mois le plus chargé en débits est %s (%.2f €), indiquant une concentration temporelle des sorties.', (string) ($maxDebitMonth['month'] ?? '—'), (float) ($maxDebitMonth['debits'] ?? 0));
         }
 
         if (is_array($maxCreditMonth)) {
-            $summaryParts[] = sprintf('Le mois le plus chargé en crédits est %s (%.2f €).', (string) ($maxCreditMonth['month'] ?? '—'), (float) ($maxCreditMonth['credits'] ?? 0));
+            $para2Parts[] = sprintf('Le mois le plus chargé en crédits est %s (%.2f €).', (string) ($maxCreditMonth['month'] ?? '—'), (float) ($maxCreditMonth['credits'] ?? 0));
         }
 
+        $para3Parts = [];
+
         if ($topBenefAmount > 0) {
-            $summaryParts[] = sprintf('Le principal pôle de sortie est "%s" avec %.2f € (%.1f %% des débits), ce qui oriente l\'analyse sur cette relation financière.', $topBenefLabel, $topBenefAmount, $topBenefShare);
+            $para3Parts[] = sprintf('Le principal pôle de sortie est "%s" avec %.2f € (%.1f %% des débits), ce qui oriente l\'analyse sur cette relation financière.', $topBenefLabel, $topBenefAmount, $topBenefShare);
         }
 
         $suspicious = [];
@@ -263,7 +315,11 @@ TXT;
         }
 
         return [
-            'summary' => implode(' ', $summaryParts),
+            'summary' => implode("\n\n", array_filter([
+                implode(' ', $para1Parts),
+                implode(' ', $para2Parts),
+                implode(' ', $para3Parts),
+            ])),
             'suspicious' => array_values(array_unique($suspicious)),
             'filters' => $filters,
             'raw' => trim($reason.' '.($raw !== '' ? $raw : '')),
@@ -417,5 +473,85 @@ TXT;
             'PERSONNE_EMILIE_GIORDANO' => 'Mme Emilie GIORDANO',
             default => null,
         };
+    }
+
+    /**
+     * Construit un résumé structuré des flux par contrepartie + totaux globaux
+     * pour enrichir le contexte envoyé au LLM.
+     *
+     * @param array<string,mixed> $context
+     * @return array<string,mixed>
+     */
+    private function buildFluxResume(array $context): array
+    {
+        $transactions = collect((array) ($context['transactions'] ?? []))->filter(fn ($r) => is_array($r));
+
+        $totalCredits  = $transactions->where('type', 'credit')->sum(fn ($t) => abs((float) ($t['amount'] ?? 0)));
+        $totalDebits   = $transactions->where('type', 'debit')->sum(fn ($t) => abs((float) ($t['amount'] ?? 0)));
+        $cashOuts      = $transactions->filter(fn ($t) => ($t['kind'] ?? '') === 'cash_withdrawal' && ($t['type'] ?? '') === 'debit');
+        $highValueOps  = $transactions->filter(fn ($t) => abs((float) ($t['amount'] ?? 0)) >= 20000)->sortByDesc(fn ($t) => abs((float) ($t['amount'] ?? 0)))->take(20);
+
+        // Flux par bénéficiaire (via destination/origin déjà enrichis si disponibles)
+        $byBenef = $transactions->groupBy(function ($t) {
+            // Priorité: champ beneficiary_detected groupé, sinon destination/origin brut
+            if (!empty($t['beneficiary_label'])) {
+                return (string) $t['beneficiary_label'];
+            }
+            if (($t['type'] ?? '') === 'debit' && !empty($t['destination'])) {
+                return (string) $t['destination'];
+            }
+            if (($t['type'] ?? '') === 'credit' && !empty($t['origin'])) {
+                return (string) $t['origin'];
+            }
+            return 'Autre/inconnu';
+        });
+
+        $counterparties = $byBenef->map(function ($rows, $label) {
+            $rows = collect($rows);
+            $credits = $rows->where('type', 'credit')->sum(fn ($t) => abs((float) ($t['amount'] ?? 0)));
+            $debits  = $rows->where('type', 'debit')->sum(fn ($t) => abs((float) ($t['amount'] ?? 0)));
+            return [
+                'label'    => $label,
+                'credits'  => round($credits, 2),
+                'debits'   => round($debits, 2),
+                'nb_mvts'  => $rows->count(),
+                'net_out'  => round($debits - $credits, 2),
+            ];
+        })->sortByDesc('net_out')->take(20)->values()->all();
+
+        // Top opérations exceptionnelles (avec kind pour que le LLM distingue chèque/virement/espèces)
+        $exceptional = $highValueOps->map(fn ($t) => [
+            'date'           => $t['date'] ?? '',
+            'amount'         => $t['amount'] ?? 0,
+            'type'           => $t['type'] ?? '',
+            'kind'           => $t['kind'] ?? null,
+            'cheque_number'  => $t['cheque_number'] ?? null,
+            'label'          => mb_substr((string) ($t['normalized_label'] ?? $t['label'] ?? ''), 0, 120),
+        ])->values()->all();
+
+        // Résumé par kind : max montant et total pour chaque catégorie
+        $byKind = $transactions->groupBy(fn ($t) => ($t['kind'] ?? 'inconnu') ?: 'inconnu')
+            ->map(fn ($rows) => [
+                'count'      => collect($rows)->count(),
+                'total'      => round(collect($rows)->sum(fn ($t) => abs((float) ($t['amount'] ?? 0))), 2),
+                'max_single' => round(collect($rows)->max(fn ($t) => abs((float) ($t['amount'] ?? 0))), 2),
+            ])->all();
+
+        // Flux espèces mensuels
+        $cashByMonth = $cashOuts->groupBy(fn ($t) => substr((string) ($t['date'] ?? ''), 0, 7))
+            ->map(fn ($rows) => round(collect($rows)->sum(fn ($t) => abs((float) ($t['amount'] ?? 0))), 2))
+            ->sortKeys()->all();
+
+        return [
+            'total_credits_eur'   => round($totalCredits, 2),
+            'total_debits_eur'    => round($totalDebits, 2),
+            'net_eur'             => round($totalCredits - $totalDebits, 2),
+            'nb_transactions'     => $transactions->count(),
+            'cash_total_eur'      => round($cashOuts->sum(fn ($t) => abs((float) ($t['amount'] ?? 0))), 2),
+            'cash_by_month'       => $cashByMonth,
+            'top_counterparties'  => $counterparties,
+            'exceptional_ops'     => $exceptional,
+            'by_kind_summary'     => $byKind,
+        ];
     }
 }

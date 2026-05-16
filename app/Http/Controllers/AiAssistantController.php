@@ -113,4 +113,61 @@ class AiAssistantController extends Controller
             ->route('cases.show', $case)
             ->with('ai_result', $result);
     }
+
+    public function semanticSearch(Request $request, CaseFile $case): \Illuminate\Http\JsonResponse
+    {
+        Gate::authorize('view', $case);
+
+        $validated = $request->validate([
+            'theme' => ['required', 'string', 'max:200'],
+        ]);
+
+        $theme = trim($validated['theme']);
+
+        $apiKey = (string) env('OPENAI_API_KEY', '');
+        if ($apiKey === '' || !config('analytica.ai.enabled')) {
+            return response()->json(['keywords' => [$theme]]);
+        }
+
+        $baseUrl = rtrim((string) config('analytica.ai.openai_base_url'), '/');
+        $model = (string) config('analytica.ai.openai_model');
+
+        try {
+            $resp = \Illuminate\Support\Facades\Http::baseUrl($baseUrl)
+                ->withToken($apiKey)
+                ->timeout(15)
+                ->acceptJson()
+                ->asJson()
+                ->post('/chat/completions', [
+                    'model' => $model,
+                    'temperature' => 0.3,
+                    'response_format' => ['type' => 'json_object'],
+                    'messages' => [
+                        [
+                            'role' => 'system',
+                            'content' => 'Tu es un expert en libellés de relevés bancaires français. Réponds UNIQUEMENT en JSON valide: {"keywords": ["MOT1", "MOT2", ...]}. Donne 6 à 10 mots-clés courts (1-3 mots) en MAJUSCULES tels qu\'ils apparaissent typiquement dans des libellés bancaires français pour le thème demandé. Inclus variantes orthographiques courantes et abréviations OCR.',
+                        ],
+                        [
+                            'role' => 'user',
+                            'content' => "Thème: {$theme}\nMots-clés bancaires correspondants?",
+                        ],
+                    ],
+                ]);
+
+            if ($resp->successful()) {
+                $decoded = json_decode((string) ($resp->json('choices.0.message.content') ?? ''), true);
+                $keywords = array_values(array_filter(
+                    (array) ($decoded['keywords'] ?? []),
+                    fn ($v) => is_string($v) && trim($v) !== ''
+                ));
+                if (!empty($keywords)) {
+                    return response()->json(['keywords' => array_slice($keywords, 0, 10)]);
+                }
+            }
+        } catch (\Throwable) {
+            // fall through
+        }
+
+        return response()->json(['keywords' => [$theme]]);
+    }
 }

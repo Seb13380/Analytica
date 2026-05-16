@@ -179,6 +179,61 @@ class StatementImportService
             }
         }
 
+        // ── Pass 3: sliding-window dedup (same amount/type, fuzzy label, ≤7 days apart) ──
+        // Catches cases where BNP embeds a value-date in the merchant name
+        // (e.g. "AUTO EUROPEAN CARS 23.05 B-V." vs "AUTO EUROPEAN CARS 28.05 B.V.")
+        // producing two transactions with identical amounts but different dates.
+        // After canonicalizeLabelForDedup() strips DD.MM patterns the labels match.
+        $windowDays   = 7;
+        $typeAmtGroups = [];
+        foreach ($unique as $idx => $tx) {
+            $groupKey = ($tx['type'] ?? '') . '|' . ($tx['amount'] ?? '');
+            $typeAmtGroups[$groupKey][] = $idx;
+        }
+        $windowDupes = [];
+        foreach ($typeAmtGroups as $indices) {
+            if (count($indices) < 2) {
+                continue;
+            }
+            // Sort indices by date within this group
+            usort($indices, fn($a, $b) => strcmp(
+                (string) ($unique[$a]['date'] ?? ''),
+                (string) ($unique[$b]['date'] ?? '')
+            ));
+            $n = count($indices);
+            for ($i = 0; $i < $n; $i++) {
+                if (isset($windowDupes[$indices[$i]])) {
+                    continue; // already marked
+                }
+                for ($j = $i + 1; $j < $n; $j++) {
+                    if (isset($windowDupes[$indices[$j]])) {
+                        continue;
+                    }
+                    $dateA = (string) ($unique[$indices[$i]]['date'] ?? '');
+                    $dateB = (string) ($unique[$indices[$j]]['date'] ?? '');
+                    if ($dateA === '' || $dateB === '') {
+                        continue;
+                    }
+                    $daysDiff = abs((int) (new \DateTime($dateA))->diff(new \DateTime($dateB))->days);
+                    if ($daysDiff > $windowDays) {
+                        break; // sorted by date, no need to go further
+                    }
+                    $labelA = (string) ($unique[$indices[$i]]['normalized_label'] ?? '');
+                    $labelB = (string) ($unique[$indices[$j]]['normalized_label'] ?? '');
+                    if (!$this->labelsLikelySameTransaction($labelA, $labelB)) {
+                        continue;
+                    }
+                    // Keep higher-confidence copy, drop the other
+                    $scoreA = (int) ($unique[$indices[$i]]['meta']['confidence'] ?? 0);
+                    $scoreB = (int) ($unique[$indices[$j]]['meta']['confidence'] ?? 0);
+                    $windowDupes[$scoreB >= $scoreA ? $indices[$i] : $indices[$j]] = true;
+                }
+            }
+        }
+        if (!empty($windowDupes)) {
+            $unique = array_values(array_filter($unique, fn($_, $k) => !isset($windowDupes[$k]), ARRAY_FILTER_USE_BOTH));
+        }
+
         $filtered = [];
         foreach ($unique as $tx) {
 
@@ -235,10 +290,15 @@ class StatementImportService
     {
         $normalized = mb_strtoupper(Normalization::cleanLabel($label));
 
-        $normalized = preg_replace('/\bBNP\s+PARIBAS\s+SA\b.*$/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\bBNP\s+PAR[\w\'\-\.]*BAS\b.*$/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\b(?:REF|REFDO|REFBEN|EMETTEUR|EMETTEUR\/|EMETTEUR\b|MDT|IBAN|BIC|RIB|LIB)\b[^\n]*/u', ' ', $normalized) ?? $normalized;
+        // Strip embedded "DD.MM" value-date patterns that BNP injects into merchant names
+        // (e.g. "AUTO EUROPEAN CARS 23.05 B-V." vs "AUTO EUROPEAN CARS 28.05 B.V.")
+        $normalized = preg_replace('/\b\d{1,2}[.]\d{2}\b/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\b[A-Z0-9]{10,}\b/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\b\d+\b/u', ' ', $normalized) ?? $normalized;
+        // Strip isolated punctuation left after removals (hyphens, dots, slashes)
+        $normalized = preg_replace('/(?<!\w)[.\-\/](?!\w)/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\s+/u', ' ', $normalized) ?? $normalized;
 
         return trim($normalized);
@@ -772,8 +832,22 @@ class StatementImportService
         // "BNP PARIBAS SA au capital de 468 663 799 € - Siège social : 46 bd des Italiens...
         //  ...RCS Paris n° 662 042 449 - ORIAS n° 07 029 735"
         // The ORIAS number 07 029 735 = 7,029,735 must NOT be parsed as a transaction amount.
+        // Also catches OCR-noisy variants: "BNP PAR'BAS SA", "BNP PARBAS SA", etc.
         if ((str_contains($upper, 'BNP PARIBAS SA') || str_contains($upper, 'BNP PARIBAS S.A')) &&
             (str_contains($upper, 'CAPITAL') || str_contains($upper, 'CAP') || str_contains($upper, 'ORIAS') || str_contains($upper, 'RCS') || str_contains($upper, 'SIEGE') || str_contains($upper, 'SIEG'))) {
+            return true;
+        }
+
+        // Fuzzy BNP footer: OCR may corrupt "PARIBAS" → "PAR'BAS", "PARBAS", "PAR-BAS", etc.
+        // Detect: BNP PAR*BAS (any chars between PAR and BAS) + capital/siege indicator.
+        if (preg_match('/\bBNP\s+PAR[\w\'\-\.]*BAS\b/u', $upper) &&
+            (str_contains($upper, 'CAP') || str_contains($upper, 'SIEG') || str_contains($upper, 'ORIAS') || str_contains($upper, '468') || str_contains($upper, '75009'))) {
+            return true;
+        }
+
+        // Footer capital amount line: "468 663 xxx €" with an address marker (often split across OCR lines).
+        if (preg_match('/\b468\s*6\d{1,2}\b/u', $upper) &&
+            (str_contains($upper, '75009') || str_contains($upper, 'SIEG') || str_contains($upper, 'ITAL') || str_contains($upper, 'PARIS'))) {
             return true;
         }
 
@@ -871,7 +945,19 @@ class StatementImportService
             return null;
         }
 
-        $rawLabel = implode(' ', $blockLines);
+        // Filter out any BNP footer/noise lines that leaked into the block
+        // (can happen when OCR corrupts the footer text and isBnpNoiseLine misses it).
+        $cleanBlockLines = array_values(array_filter(
+            $blockLines,
+            fn (string $l) => !$this->isBnpNoiseLine(mb_strtoupper($l)) && !$this->isLikelyMetadataLine($l)
+        ));
+        // Preserve first line (anchor with date) even if it looks like noise — it carries the date.
+        if ($cleanBlockLines === [] || $cleanBlockLines[0] !== $blockLines[0]) {
+            array_unshift($cleanBlockLines, $blockLines[0]);
+            $cleanBlockLines = array_unique($cleanBlockLines);
+        }
+
+        $rawLabel = implode(' ', $cleanBlockLines);
 
         if (is_string($context) && $context !== '' && str_starts_with(mb_strtoupper($blockLines[0]), 'DU ')) {
             $rawLabel = $context.' '.$rawLabel;
@@ -880,6 +966,10 @@ class StatementImportService
         if ($amountData['raw'] !== '') {
             $rawLabel = preg_replace('/'.preg_quote($amountData['raw'], '/').'/', '', $rawLabel, 1) ?? $rawLabel;
         }
+
+        // Strip any residual BNP footer text (fuzzy: "BNP PAR*BAS SA ... 468 663 ... 75009")
+        $rawLabel = preg_replace('/\bBNP\s+PAR[\w\'\-\.]*BAS\b.{0,300}$/ui', '', $rawLabel) ?? $rawLabel;
+        $rawLabel = preg_replace('/\b468\s*6\d{1,2}\b.{0,200}$/u', '', $rawLabel) ?? $rawLabel;
 
         $label = Normalization::cleanLabel($rawLabel);
         if ($label === '') {
@@ -1790,10 +1880,13 @@ class StatementImportService
         $motif = $label;
         $chequeNumber = null;
 
-        if (preg_match('/\b(CHEQUE|CH[EÉ]QUE)\b/', $norm)) {
+        if (preg_match('/\b(CHEQUES?|CH[EÉ]QUES?|CHQ)\b/u', $norm)
+            || preg_match('/\bREMISE\s+CH[^A-Z]{0,3}(?:EQUE|QUE)/u', $norm)
+            || preg_match('/\bBORDEREAU\b.*\bINOPT\b/u', $norm)
+            || preg_match('/\bINOPT\b.*\bCHQ\b/u', $norm)) {
             $kind = 'cheque';
 
-            if (preg_match('/\bN\s*[°O]?\s*(\d{4,10})\b/', $norm, $m) || preg_match('/\bCHEQUE\s+(\d{4,10})\b/', $norm, $m)) {
+            if (preg_match('/\bN\s*[°O]?\s*(\d{4,10})\b/', $norm, $m) || preg_match('/\bCHEQUES?\s+(\d{4,10})\b/', $norm, $m)) {
                 $chequeNumber = $m[1];
             }
         } elseif (preg_match('/\b(RETRAIT\s+DAB|RETRAIT|DAB|ATM)\b/', $norm)) {
