@@ -2682,15 +2682,31 @@ class CaseController extends Controller
             $txBase->where('kind', $filters['kind']);
         }
         if ($filters['q'] !== '') {
-            $term = $filters['q'];
-            $txBase->where(function ($query) use ($term) {
-                $query
-                    ->where('label', 'ilike', '%'.$term.'%')
-                    ->orWhere('motif', 'ilike', '%'.$term.'%')
-                    ->orWhere('origin', 'ilike', '%'.$term.'%')
-                    ->orWhere('destination', 'ilike', '%'.$term.'%')
-                    ->orWhere('normalized_label', 'ilike', '%'.mb_strtoupper($term).'%')
-                    ->orWhere('cheque_number', 'ilike', '%'.$term.'%');
+            // Support pipe-separated OR terms (e.g. "VOYAGE|CROISIERE|TOURISME")
+            $terms = array_values(array_filter(array_map('trim', explode('|', $filters['q'])), fn ($t) => $t !== ''));
+            $txBase->where(function ($query) use ($terms) {
+                foreach ($terms as $i => $term) {
+                    $upper = mb_strtoupper($term);
+                    if ($i === 0) {
+                        $query->where(function ($sub) use ($term, $upper) {
+                            $sub->where('label', 'ilike', '%'.$term.'%')
+                                ->orWhere('motif', 'ilike', '%'.$term.'%')
+                                ->orWhere('origin', 'ilike', '%'.$term.'%')
+                                ->orWhere('destination', 'ilike', '%'.$term.'%')
+                                ->orWhere('normalized_label', 'ilike', '%'.$upper.'%')
+                                ->orWhere('cheque_number', 'ilike', '%'.$term.'%');
+                        });
+                    } else {
+                        $query->orWhere(function ($sub) use ($term, $upper) {
+                            $sub->where('label', 'ilike', '%'.$term.'%')
+                                ->orWhere('motif', 'ilike', '%'.$term.'%')
+                                ->orWhere('origin', 'ilike', '%'.$term.'%')
+                                ->orWhere('destination', 'ilike', '%'.$term.'%')
+                                ->orWhere('normalized_label', 'ilike', '%'.$upper.'%')
+                                ->orWhere('cheque_number', 'ilike', '%'.$term.'%');
+                        });
+                    }
+                }
             });
         }
         if ($filters['score_min'] !== '' && is_numeric($filters['score_min'])) {

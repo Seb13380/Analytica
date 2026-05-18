@@ -585,10 +585,11 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                     aiQuery: '',
                     aiLoading: false,
                     aiSuggestions: [],
+                    aiSelected: [],
                     aiError: '',
                     async aiSearch() {
                         if (this.aiQuery.trim() === '') return;
-                        this.aiLoading = true; this.aiError = ''; this.aiSuggestions = [];
+                        this.aiLoading = true; this.aiError = ''; this.aiSuggestions = []; this.aiSelected = [];
                         try {
                             const resp = await fetch('{{ route('cases.search-semantic', $case) }}', {
                                 method: 'POST',
@@ -601,6 +602,16 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             if (!this.aiSuggestions.length) this.aiError = 'Aucune suggestion.';
                         } catch(e) { this.aiError = 'Service IA indisponible.'; }
                         finally { this.aiLoading = false; }
+                    },
+                    toggleKeyword(kw) {
+                        const idx = this.aiSelected.indexOf(kw);
+                        if (idx === -1) this.aiSelected.push(kw); else this.aiSelected.splice(idx, 1);
+                    },
+                    applySelected() {
+                        if (!this.aiSelected.length) return;
+                        this.q = this.aiSelected.join('|');
+                        this.aiOpen = false;
+                        this.$nextTick(() => document.getElementById('bloc1-tx-search-form').submit());
                     },
                     applyKeyword(kw) {
                         this.q = kw; this.aiOpen = false;
@@ -631,20 +642,32 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             <span class="text-sm font-semibold text-purple-900">✨ Recherche sémantique IA</span>
                             <button type="button" @click="aiOpen = false" class="text-purple-400 hover:text-purple-800 text-xs">✕</button>
                         </div>
-                        <p class="text-xs text-purple-700 mb-3">Décrivez le type de dépense (ex : <em>voyage</em>, <em>voiture</em>, <em>restaurant</em>, <em>travaux</em>, <em>médecin</em>)…</p>
+                        <p class="text-xs text-purple-700 mb-3">Décrivez en langage naturel ce que vous cherchez (ex : <em>voyages et croisières</em>, <em>médecin cardiologue</em>, <em>travaux maison</em>)…</p>
                         <div class="flex gap-2">
-                            <input type="text" x-model="aiQuery" @keydown.enter.prevent="aiSearch()" placeholder="ex : voyage, essence, médecin…" class="flex-1 rounded-lg border border-purple-200 px-3 py-2 text-sm bg-white focus:border-purple-500 focus:ring-purple-500 focus:outline-none">
+                            <input type="text" x-model="aiQuery" @keydown.enter.prevent="aiSearch()" placeholder="ex : voyages, agences de voyage, croisière…" class="flex-1 rounded-lg border border-purple-200 px-3 py-2 text-sm bg-white focus:border-purple-500 focus:ring-purple-500 focus:outline-none">
                             <button type="button" @click="aiSearch()" :disabled="aiLoading || aiQuery.trim() === ''" class="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50">
-                                <span x-show="!aiLoading">Trouver les mots-clés</span><span x-show="aiLoading" x-cloak>⏳</span>
+                                <span x-show="!aiLoading">Générer les mots-clés</span><span x-show="aiLoading" x-cloak>⏳ IA…</span>
                             </button>
                         </div>
                         <div x-show="aiError !== ''" x-cloak class="mt-2 text-xs text-red-600" x-text="aiError"></div>
                         <div x-show="aiSuggestions.length > 0" x-cloak class="mt-3">
-                            <div class="text-xs text-purple-700 mb-2 font-medium">Cliquez sur un mot-clé :</div>
-                            <div class="flex flex-wrap gap-2">
+                            <div class="text-xs text-purple-700 mb-1 font-medium">Cochez les mots-clés à inclure dans la recherche :</div>
+                            <div class="text-xs text-purple-500 mb-2">Sélectionnez-en plusieurs pour une recherche élargie (résultats contenant l'un OU l'autre).</div>
+                            <div class="flex flex-wrap gap-2 mb-3">
                                 <template x-for="kw in aiSuggestions" :key="kw">
-                                    <button type="button" @click="applyKeyword(kw)" class="px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 text-xs font-medium hover:bg-purple-100" x-text="kw"></button>
+                                    <button type="button" @click="toggleKeyword(kw)"
+                                        :class="aiSelected.includes(kw)
+                                            ? 'px-3 py-1.5 rounded-full border-2 border-purple-600 bg-purple-600 text-white text-xs font-semibold shadow'
+                                            : 'px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 text-xs font-medium hover:bg-purple-100'"
+                                        x-text="kw"></button>
                                 </template>
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <button type="button" @click="applySelected()" :disabled="aiSelected.length === 0"
+                                    class="px-4 py-2 rounded-lg bg-purple-700 text-white text-sm font-semibold hover:bg-purple-800 disabled:opacity-40 transition-colors">
+                                    Rechercher (<span x-text="aiSelected.length"></span> sélectionné<span x-show="aiSelected.length > 1">s</span>)
+                                </button>
+                                <span x-show="aiSelected.length > 0" x-cloak class="text-xs text-purple-600" x-text="'→ ' + aiSelected.join(' OU ')"></span>
                             </div>
                         </div>
                     </div>
@@ -3129,12 +3152,14 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             aiQuery: '',
                             aiLoading: false,
                             aiSuggestions: [],
+                            aiSelected: [],
                             aiError: '',
                             async aiSearch() {
                                 if (this.aiQuery.trim() === '') return;
                                 this.aiLoading = true;
                                 this.aiError = '';
                                 this.aiSuggestions = [];
+                                this.aiSelected = [];
                                 try {
                                     const resp = await fetch('{{ route('cases.search-semantic', $case) }}', {
                                         method: 'POST',
@@ -3154,6 +3179,16 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                                 } finally {
                                     this.aiLoading = false;
                                 }
+                            },
+                            toggleKeyword(kw) {
+                                const idx = this.aiSelected.indexOf(kw);
+                                if (idx === -1) this.aiSelected.push(kw); else this.aiSelected.splice(idx, 1);
+                            },
+                            applySelected() {
+                                if (!this.aiSelected.length) return;
+                                this.q = this.aiSelected.join('|');
+                                this.aiOpen = false;
+                                this.$nextTick(() => document.getElementById('tx-quick-search-form').submit());
                             },
                             applyKeyword(kw) {
                                 this.q = kw;
@@ -3197,30 +3232,40 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                                 <span class="text-sm font-semibold text-purple-900">✨ Recherche sémantique IA</span>
                                 <button type="button" @click="aiOpen = false" class="text-purple-500 hover:text-purple-800 text-xs">✕ Fermer</button>
                             </div>
-                            <p class="text-xs text-purple-700 mb-3">Décrivez le type de dépense (ex : <em>voyage</em>, <em>voiture</em>, <em>restaurant</em>, <em>travaux</em>, <em>médecin</em>)…</p>
+                            <p class="text-xs text-purple-700 mb-3">Décrivez en langage naturel ce que vous cherchez (ex : <em>voyages et croisières</em>, <em>médecin cardiologue</em>, <em>travaux maison</em>)…</p>
                             <div class="flex gap-2">
                                 <input type="text" x-model="aiQuery"
                                        @keydown.enter.prevent="aiSearch()"
-                                       placeholder="ex : voyage, essence, médecin…"
+                                       placeholder="ex : voyages, agences de voyage, croisière…"
                                        class="flex-1 rounded-lg border border-purple-200 px-3 py-2 text-sm bg-white focus:border-purple-500 focus:ring-purple-500 focus:outline-none">
                                 <button type="button"
                                         @click="aiSearch()"
                                         :disabled="aiLoading || aiQuery.trim() === ''"
                                         class="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors">
-                                    <span x-show="!aiLoading">Trouver les mots-clés</span>
-                                    <span x-show="aiLoading" x-cloak>⏳ Recherche…</span>
+                                    <span x-show="!aiLoading">Générer les mots-clés</span>
+                                    <span x-show="aiLoading" x-cloak>⏳ IA…</span>
                                 </button>
                             </div>
                             <div x-show="aiError !== ''" x-cloak class="mt-2 text-xs text-red-600" x-text="aiError"></div>
                             <div x-show="aiSuggestions.length > 0" x-cloak class="mt-3">
-                                <div class="text-xs text-purple-700 mb-2 font-medium">Cliquez sur un mot-clé pour filtrer les transactions :</div>
-                                <div class="flex flex-wrap gap-2">
+                                <div class="text-xs text-purple-700 mb-1 font-medium">Cochez les mots-clés à inclure dans la recherche :</div>
+                                <div class="text-xs text-purple-500 mb-2">Sélectionnez-en plusieurs pour une recherche élargie (résultats contenant l'un OU l'autre).</div>
+                                <div class="flex flex-wrap gap-2 mb-3">
                                     <template x-for="kw in aiSuggestions" :key="kw">
                                         <button type="button"
-                                                @click="applyKeyword(kw)"
-                                                class="px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 text-xs font-medium hover:bg-purple-100 transition-colors cursor-pointer"
+                                                @click="toggleKeyword(kw)"
+                                                :class="aiSelected.includes(kw)
+                                                    ? 'px-3 py-1.5 rounded-full border-2 border-purple-600 bg-purple-600 text-white text-xs font-semibold shadow'
+                                                    : 'px-3 py-1.5 rounded-full border border-purple-300 bg-white text-purple-800 text-xs font-medium hover:bg-purple-100 transition-colors cursor-pointer'"
                                                 x-text="kw"></button>
                                     </template>
+                                </div>
+                                <div class="flex items-center gap-3">
+                                    <button type="button" @click="applySelected()" :disabled="aiSelected.length === 0"
+                                        class="px-4 py-2 rounded-lg bg-purple-700 text-white text-sm font-semibold hover:bg-purple-800 disabled:opacity-40 transition-colors">
+                                        Rechercher (<span x-text="aiSelected.length"></span> sélectionné<span x-show="aiSelected.length > 1">s</span>)
+                                    </button>
+                                    <span x-show="aiSelected.length > 0" x-cloak class="text-xs text-purple-600" x-text="'→ ' + aiSelected.join(' OU ')"></span>
                                 </div>
                             </div>
                         </div>
