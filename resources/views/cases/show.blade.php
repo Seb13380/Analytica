@@ -1523,8 +1523,9 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             }
                         });
                         function fmtEur(v) { return v.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2}) + '\u00a0\u20ac'; }
+                        var totalCount = countDebit + countCredit;
                         html += '<tr style="font-weight:700;border-top:2px solid #C9A84C;background:#FDFAF4;">';
-                        html += '<td colspan="3" style="font-size:11px;letter-spacing:0.05em;text-transform:uppercase;">Total (' + rows.length + '\u00a0op\u00e9ration' + (rows.length > 1 ? 's' : '') + ')</td>';
+                        html += '<td colspan="3" style="font-size:11px;letter-spacing:0.05em;text-transform:uppercase;">Total (' + totalCount + '\u00a0op\u00e9ration' + (totalCount > 1 ? 's' : '') + ')</td>';
                         html += '<td></td>';
                         html += '<td style="font-size:11px;">D\u00e9bit\u00a0: ' + countDebit + '</td>';
                         html += '<td class="amount" style="color:#b91c1c;">\u2212\u00a0' + fmtEur(totalDebit) + '</td>';

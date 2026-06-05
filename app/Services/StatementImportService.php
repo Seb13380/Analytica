@@ -290,10 +290,15 @@ class StatementImportService
     {
         $normalized = mb_strtoupper(Normalization::cleanLabel($label));
 
-        $normalized = preg_replace('/\bBNP\s+PAR[\w\'\-\.]*BAS\b.*$/u', ' ', $normalized) ?? $normalized;
+        // Strip BNP Paribas footer (including OCR misreads of the "B" → "E", "P" → "F", etc.)
+        $normalized = preg_replace('/\b[BEFP]NP\s+PAR[\w\'\-\.]*BAS\b.*$/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\b(?:REF|REFDO|REFBEN|EMETTEUR|EMETTEUR\/|EMETTEUR\b|MDT|IBAN|BIC|RIB|LIB)\b[^\n]*/u', ' ', $normalized) ?? $normalized;
+        // Pour les remises de chèques, tout ce qui suit BORDEREAU (numéro OCR + pied de page) est bruit
+        // → on tronque après le mot BORDEREAU / RBORDEREAU pour que 03479593 = 03479503
+        $normalized = preg_replace('/\bR?BORDEREAU\b.*/u', 'BORDEREAU', $normalized) ?? $normalized;
+        // Strip "/NOPT/NB CHQ..." suffix BNP
+        $normalized = preg_replace('/\/NOPT\b.*/u', ' ', $normalized) ?? $normalized;
         // Strip embedded "DD.MM" value-date patterns that BNP injects into merchant names
-        // (e.g. "AUTO EUROPEAN CARS 23.05 B-V." vs "AUTO EUROPEAN CARS 28.05 B.V.")
         $normalized = preg_replace('/\b\d{1,2}[.]\d{2}\b/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\b[A-Z0-9]{10,}\b/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\b\d+\b/u', ' ', $normalized) ?? $normalized;

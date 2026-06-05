@@ -611,6 +611,22 @@ class ImportStatementJob implements ShouldQueue
             if ((bool) config('analytica.import.auto_analyze', false)) {
                 $engine->analyzeCase($case->fresh(['bankAccounts']));
             }
+
+            // ── Déduplication post-import (double passe exact + fuzzy) ───────────────
+            // Supprime les doublons OCR qui auraient échappé à la dédup en mémoire
+            // (même ligne lue deux fois avec des chiffres légèrement différents).
+            try {
+                $dedup = app(\App\Services\DeduplicationService::class);
+                $dedupStats = $dedup->deduplicateAccount($bankAccount);
+                if ($dedupStats['deleted'] > 0) {
+                    Log::info("ImportStatementJob [stmt={$this->statementId}]: déduplication post-import — {$dedupStats['deleted']} doublon(s) supprimé(s)");
+                }
+            } catch (\Throwable $dedupEx) {
+                Log::warning('[ImportStatementJob] Déduplication post-import échouée', [
+                    'statement_id' => $this->statementId,
+                    'error'        => $dedupEx->getMessage(),
+                ]);
+            }
         } catch (\Throwable $e) {
             $statement->forceFill([
                 'import_status' => 'failed',
