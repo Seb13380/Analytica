@@ -1404,12 +1404,14 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                     }
 
                     @php
-                        $printAccounts = $case->bankAccounts->map(function ($account) use ($accountProfileById) {
-                            $profile = (string) ($accountProfileById[$account->getKey()] ?? 'personal');
+                        $printAccounts = $case->bankAccounts->map(function ($account) {
+                            $holder = trim((string) ($account->account_holder ?? ''));
+                            $holderLower = mb_strtolower($holder);
+                            $isJoint = str_contains($holderLower, 'commun') || str_contains($holderLower, 'm. / mme') || str_contains($holderLower, 'mr et mme') || $holder === '';
                             return [
                                 'bank'   => trim((string) ($account->bank_name ?? 'Banque')),
-                                'type'   => $profile === 'joint' ? 'Compte commun' : 'Compte personnel',
-                                'holder' => trim((string) ($account->account_holder ?? ($profile === 'joint' ? 'M. / Mme' : ''))),
+                                'type'   => $isJoint ? 'Compte commun' : 'Compte personnel',
+                                'holder' => $holder ?: 'M. / Mme',
                                 'rib'    => trim((string) ($account->rib ?? '')),
                                 'iban'   => trim((string) ($account->iban_masked ?? '')),
                             ];
