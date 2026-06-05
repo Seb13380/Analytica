@@ -182,11 +182,30 @@ class ImportStatementJob implements ShouldQueue
                     'ocr_used' => $ocrUsed,
                 ])->save();
 
-                // ── Extract RIB/IBAN from statement header and store on bank account ─
-                if (empty($bankAccount->rib)) {
-                    $ribExtracted = $this->extractRibFromText($text);
-                    if ($ribExtracted !== null) {
-                        $bankAccount->forceFill(['rib' => $ribExtracted])->save();
+                // ── Extract RIB/IBAN from statement header ─────────────────────────
+                $ribExtracted = $this->extractRibFromText($text);
+                if ($ribExtracted !== null && empty($bankAccount->rib)) {
+                    $bankAccount->forceFill(['rib' => $ribExtracted])->save();
+                }
+
+                // ── Déduplication par RIB : si un autre compte du dossier a ce même RIB,
+                //    rediriger ce relevé (et ses futures transactions) vers lui ────────
+                if ($ribExtracted !== null) {
+                    $ribNorm = preg_replace('/\s+/', '', $ribExtracted);
+                    $matchingAccount = \App\Models\BankAccount::where('case_id', $case->getKey())
+                        ->where('id', '!=', $bankAccount->getKey())
+                        ->get()
+                        ->first(function ($acc) use ($ribNorm) {
+                            return preg_replace('/\s+/', '', (string)($acc->rib ?? '')) === $ribNorm;
+                        });
+
+                    if ($matchingAccount !== null) {
+                        // Ce relevé appartient à un compte déjà existant — on y rattache tout
+                        $statement->forceFill(['bank_account_id' => $matchingAccount->getKey()])->save();
+                        $bankAccount = $matchingAccount;
+                        \Illuminate\Support\Facades\Log::info(
+                            "ImportStatementJob [stmt={$this->statementId}]: redirection vers compte #{$matchingAccount->getKey()} (même RIB {$ribExtracted})"
+                        );
                     }
                 }
 
@@ -200,11 +219,11 @@ class ImportStatementJob implements ShouldQueue
                 }
 
                 // ── Detect account type (joint/savings/personal) ──────────────────
+                $upperText = mb_strtoupper($text);
                 if (empty($bankAccount->account_type)) {
-                    $upper = mb_strtoupper($text);
-                    if (preg_match('/\bM\.?\s+(?:OU|ET)\s+MME\.?\b/u', $upper)) {
+                    if (preg_match('/\bM\.?\s+(?:OU|ET)\s+MME\.?\b/u', $upperText)) {
                         $bankAccount->forceFill(['account_type' => 'joint'])->save();
-                    } elseif (preg_match('/\bLIVRET\b|\bEPARGNE\b|\bLDD\b|\bLDDS\b|\bLEP\b/u', $upper)) {
+                    } elseif (preg_match('/\bLIVRET\b|\bEPARGNE\b|\bLDD\b|\bLDDS\b|\bLEP\b/u', $upperText)) {
                         $bankAccount->forceFill(['account_type' => 'savings'])->save();
                     } else {
                         $bankAccount->forceFill(['account_type' => 'personal'])->save();

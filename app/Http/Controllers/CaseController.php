@@ -173,24 +173,33 @@ class CaseController extends Controller
         $selectedAccounts = $case->bankAccounts;
 
         $accountDisplayById = $case->bankAccounts->mapWithKeys(function ($account) use ($accountProfileById) {
-            $profile = (string) ($accountProfileById[$account->getKey()] ?? 'personal');
-            $profileLabel = $profile === 'joint' ? 'Compte commun' : 'Compte personnel';
+            // Priorité : account_type en DB (extrait automatiquement à l'import)
+            $acType = $account->account_type ?? '';
+            if ($acType === 'joint') {
+                $profileLabel = 'Compte commun';
+            } elseif ($acType === 'savings') {
+                $profileLabel = 'Livret / Épargne';
+            } elseif ($acType === 'personal') {
+                $profileLabel = 'Compte personnel';
+            } else {
+                // Fallback si colonne vide : ancienne détection heuristique
+                $profile = (string) ($accountProfileById[$account->getKey()] ?? 'personal');
+                $profileLabel = $profile === 'joint' ? 'Compte commun' : 'Compte personnel';
+            }
 
             $holder = trim((string) ($account->account_holder ?? ''));
-            $holderLabel = $holder;
-            if ($holderLabel === '') {
-                $holderLabel = $profile === 'joint' ? 'M. / Mme' : 'M. ou Mme';
+            // Ne pas afficher les valeurs génériques/techniques comme holder
+            $genericLabels = ['compte personnel', 'livret dev / épargne', 'livret dev / epargne', 'm. / mme', 'm. ou mme', ''];
+            if (in_array(mb_strtolower($holder), $genericLabels)) {
+                $holder = '';
             }
 
             $accountNumber = trim((string) ($account->iban_masked ?? ''));
             $bank = trim((string) ($account->bank_name ?? 'Compte'));
 
-            $parts = [$bank, $profileLabel, $holderLabel];
-            if ($accountNumber !== '') {
-                $parts[] = $accountNumber;
-            }
+            $parts = array_filter([$bank, $profileLabel, $holder ?: null, $accountNumber ?: null]);
 
-            return [$account->getKey() => implode(' · ', array_filter($parts, fn ($part) => is_string($part) && trim($part) !== ''))];
+            return [$account->getKey() => implode(' · ', $parts)];
         });
 
         if ($filters['bank_name'] !== '') {
