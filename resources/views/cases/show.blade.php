@@ -379,34 +379,51 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                 function cleanBankLabel(string $raw): string {
                     $s = $raw;
 
-                    // ── 1. Strip SEPA/OCR technical subfields before any case conversion ──
-                    // Remove blocks like: ID EMETTEUR/FR34ZZZ..., LIB/..., MDT/++..., ECH/..., REFBEN/..., REFDO/...
-                    $s = preg_replace('/\s+(?:ID\s+EMETTEUR|LIB|MDT|ECH|REFBEN|REFDO|RUM|ICS|CREDITOR)\s*\/\S+/iu', '', $s);
-                    // Remove SEPA fields: /DE, /MOTF, /MOT:F, /REF, /RFA, /BIC, /IBAN, etc.
-                    $s = preg_replace('/\s*\/(DE|MOTF?|MOT:F?|REFDO?|RFA|BIC|IBAN|PR:X|VER|REF|Z\s*\d{3})\s+/iu', ' ', $s);
-                    // Remove stray reference codes after cheque number (e.g. "CHEQUE 1479621 FR44ZZZ...")
-                    $s = preg_replace('/\b([A-Z]{2}\d{2}[A-Z0-9]{3,})\b/', '', $s);
+                    // ── 1. Strip SEPA/OCR technical subfields (avant toute autre chose) ────
+                    // Remove: /BEN ..., /MOTIF ..., /REFBEN ..., /REFDO ..., /REF ..., etc.
+                    $s = preg_replace('/\s*\/(?:BEN|MOTIF|REFBEN|REFDO|REF|EMETTEUR|LIB|MDT|ECH|RUM|ICS|CREDITOR|REFDOS?)\b[^\/\n]*/iu', '', $s);
+                    // Remove blocks like: ID EMETTEUR/FR34ZZZ..., LIB/..., MDT/++...
+                    $s = preg_replace('/\s+(?:ID\s+EMETTEUR|LIB|MDT|ECH|REFBEN|REFDO|RUM|ICS)\s*\/\S+/iu', '', $s);
+                    // Remove SEPA ref fields: /DE, /MOTF, /MOT:F, /RFA, /BIC, /IBAN, /VER
+                    $s = preg_replace('/\s*\/(DE|MOTF?|MOT:F?|REFDO?|RFA|BIC|IBAN|PR:X|VER|Z\s*\d{3})\s+/iu', ' ', $s);
+                    // Remove IBAN-like sequences (FR76 3000...)
+                    $s = preg_replace('/\b(?:FR|DE|BE|ES|IT|NL|GB)\s?\d{2}(?:\s?[A-Z0-9]{4}){4,6}(?:\s?[A-Z0-9]{0,3})?\b/iu', '', $s);
+                    // Remove long alphanumeric reference codes (SEPA mandate IDs etc.)
+                    $s = preg_replace('/\b[A-Z]{2}\d{2}[A-Z0-9]{6,}\b/', '', $s);
 
-                    // ── 2. For cheque entries: keep only "CHEQUE NNNNNNN" ─────────────────
+                    // ── 2. Remove leading date prefix like "07.04 ", "28-07 ", "0110 " (DDMM) ─
+                    $s = preg_replace('/^\s*\d{2}[.\-]\d{2}\s+/u', '', $s);
+                    $s = preg_replace('/^\s*\d{4}\s+(?=\D)/u', '', $s); // "0110 Remise..."
+
+                    // ── 3. For cheque entries: keep only "CHEQUE NNNNNNN" ─────────────────
                     if (preg_match('/\b(?:CHEQUE|CHQ)\s+(\d{4,10})\b/iu', $s, $m)) {
-                        $s = 'CHEQUE '.$m[1];
+                        $s = 'CHEQUE ' . $m[1];
                     }
 
-                    // ── 3. Normalize case ────────────────────────────────────────────────
+                    // ── 4. For "Remise Chèques Bordereau XXXXXXXX": strip everything after number
+                    $s = preg_replace('/\b(Remise\s+Ch[eè]ques?\s+(?:R?Bordereau|Rbordereau)\s+\d{6,12})\b.*/iu', '$1', $s);
+                    // Fix OCR artefact: "Rbordereau" → "Bordereau"
+                    $s = preg_replace('/\bRbordereau\b/iu', 'Bordereau', $s);
+                    // Remove "Inopt/Nb ..." and "/00001" style noise after bordereau
+                    $s = preg_replace('/\s+Inopt\/Nb\b.*/iu', '', $s);
+                    $s = preg_replace('/\s+\/\d{5}\b/u', '', $s);
+
+                    // ── 5. Normalize case ────────────────────────────────────────────────
                     $s = mb_convert_case(mb_strtolower($s), MB_CASE_TITLE, 'UTF-8');
 
-                    // ── 4. Human-readable keyword replacements ───────────────────────────
+                    // ── 6. Human-readable keyword replacements ───────────────────────────
                     $s = preg_replace('/\b(Vir\s+Sepa\s+Rec[uç]?)\b/iu', 'Virement reçu –', $s);
                     $s = preg_replace('/\b(Vir\s+Sepa\s+Emis)\b/iu', 'Virement émis –', $s);
-                    $s = preg_replace('/\b(Vir\b)/iu', 'Virement –', $s);
+                    $s = preg_replace('/\bVer\s+Cpte\s+A\s+Cpte\s+Emes?\b/iu', 'Virement compte à compte –', $s);
                     $s = preg_replace('/\b(Cheque|Chq)\b/iu', 'Chèque', $s);
                     $s = preg_replace('/\b(Prlv\s+Sepa|Prelevement)\b/iu', 'Prélèvement –', $s);
                     $s = preg_replace('/\b(Cb|Paiement\s+Cb)\b/iu', 'Paiement carte –', $s);
 
-                    // ── 5. Remove stray special chars, repeated spaces, trailing date artefacts ──
+                    // ── 7. Remove stray chars, repeated spaces, trailing date artefacts, trailing dash ──
                     $s = preg_replace('/[\|\*\^]/', ' ', $s);
                     $s = preg_replace('/\s{2,}/', ' ', $s);
                     $s = preg_replace('/\s+\d{2}\.\d{2}\b/', '', $s);
+                    $s = preg_replace('/\s*[–\-]+\s*$/', '', $s); // trailing dash
 
                     return trim($s);
                 }
