@@ -1403,13 +1403,14 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                         html += '<h1>Montants exceptionnels \u2014 ' + caseName + '</h1>';
                         html += '<div class="sub">Seuil : \u2265 ' + threshold + ' \u20ac &nbsp;\u00b7&nbsp; Filtre : ' + activeType + ' &nbsp;\u00b7&nbsp; G\u00e9n\u00e9r\u00e9 le {{ now()->format("d/m/Y") }}</div>';
                         html += '<p style="font-size:11px;color:#5C5449;margin-bottom:16px;">Ce document liste les transactions financi\u00e8res exceptionnelles d\u00e9tect\u00e9es lors de l\'analyse du dossier. Il peut servir de base \u00e0 une demande de justificatifs adress\u00e9e aux \u00e9metteurs ou b\u00e9n\u00e9ficiaires concern\u00e9s.</p>';
-                        html += '<table><thead><tr><th>Date</th><th>Libell\u00e9</th><th>Type</th><th>Sens</th><th class="amount">Montant</th></tr></thead><tbody>';
+                        html += '<table><thead><tr><th>Date</th><th>Compte</th><th>Libell\u00e9</th><th>Type</th><th>Sens</th><th class="amount">Montant</th></tr></thead><tbody>';
                         rows.forEach(function(row) {
                             if (row.id && row.id.startsWith('tx-source')) return;
                             var cells = row.querySelectorAll('td');
                             if (cells.length >= 6) {
                                 html += '<tr>';
                                 html += '<td>' + (cells[0]?.textContent?.trim() || '') + '</td>';
+                                html += '<td style="font-size:10px;color:#5C5449;">' + (cells[1]?.textContent?.trim() || '') + '</td>';
                                 html += '<td>' + (cells[2]?.querySelector('span')?.textContent?.trim() || cells[2]?.textContent?.trim() || '') + '</td>';
                                 html += '<td>' + (cells[3]?.textContent?.trim() || '') + '</td>';
                                 html += '<td>' + (cells[4]?.textContent?.trim() || '') + '</td>';
