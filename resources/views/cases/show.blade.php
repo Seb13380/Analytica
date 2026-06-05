@@ -1403,19 +1403,22 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                         });
                     }
 
+                    @php
+                        $printAccounts = $case->bankAccounts->map(function ($account) use ($accountProfileById) {
+                            $profile = (string) ($accountProfileById[$account->getKey()] ?? 'personal');
+                            return [
+                                'bank'   => trim((string) ($account->bank_name ?? 'Banque')),
+                                'type'   => $profile === 'joint' ? 'Compte commun' : 'Compte personnel',
+                                'holder' => trim((string) ($account->account_holder ?? ($profile === 'joint' ? 'M. / Mme' : ''))),
+                                'rib'    => trim((string) ($account->rib ?? '')),
+                                'iban'   => trim((string) ($account->iban_masked ?? '')),
+                            ];
+                        })->values();
+                    @endphp
                     function printExceptionalTable() {
                         var caseName = {!! json_encode($case->title ?? 'Dossier') !!};
                         var threshold = {!! json_encode(number_format((float)($exceptional_threshold ?? 20000), 0, ',', ' ')) !!};
-                        var accounts = {!! json_encode($case->bankAccounts->map(function ($account) use ($accountProfileById) {
-                            $profile = (string) ($accountProfileById[$account->getKey()] ?? 'personal');
-                            return [
-                                'bank'    => trim((string) ($account->bank_name ?? 'Banque')),
-                                'type'    => $profile === 'joint' ? 'Compte commun' : 'Compte personnel',
-                                'holder'  => trim((string) ($account->account_holder ?? ($profile === 'joint' ? 'M. / Mme' : ''))),
-                                'rib'     => trim((string) ($account->rib ?? '')),
-                                'iban'    => trim((string) ($account->iban_masked ?? '')),
-                            ];
-                        })->values()) !!};
+                        var accounts = {!! json_encode($printAccounts) !!};
                         var rows = document.querySelectorAll('#exceptional-tbody .exc-row:not([style*="display: none"])');
                         var activeType = 'Tous types';
                         document.querySelectorAll('.exc-type-btn').forEach(function(btn) {
