@@ -218,7 +218,7 @@ class ImportStatementJob implements ShouldQueue
                     }
                 }
 
-                // ── Detect account type (joint/savings/personal) ──────────────────
+                // ── Detect account type (joint/savings/personal) + intitulé complet ─
                 $upperText = mb_strtoupper($text);
                 if (empty($bankAccount->account_type)) {
                     if (preg_match('/\bM\.?\s+(?:OU|ET)\s+MME\.?\b/u', $upperText)) {
@@ -227,6 +227,12 @@ class ImportStatementJob implements ShouldQueue
                         $bankAccount->forceFill(['account_type' => 'savings'])->save();
                     } else {
                         $bankAccount->forceFill(['account_type' => 'personal'])->save();
+                    }
+                }
+                if (empty($bankAccount->account_label)) {
+                    $labelExtracted = $this->extractAccountLabelFromText($text);
+                    if ($labelExtracted !== null) {
+                        $bankAccount->forceFill(['account_label' => $labelExtracted])->save();
                     }
                 }
 
@@ -660,6 +666,71 @@ class ImportStatementJob implements ShouldQueue
      * Gère les formats : "RIB : 30004 00702 00002123116 60" et "IBAN : FR76 3000 4007 ..."
      * Fonctionne pour toutes les banques françaises.
      */
+    /**
+     * Extrait l'intitulé complet du produit bancaire depuis l'en-tête du relevé.
+     * Ex : "Relevé de compte chèques", "Relevé Livret Développement Durable et Solidaire"
+     */
+    private function extractAccountLabelFromText(string $text): ?string
+    {
+        $upper = mb_strtoupper($text);
+        $lines = array_slice(explode("\n", $upper), 0, 80);
+
+        // Dictionnaire de normalisation des labels connus
+        $knownLabels = [
+            'RELEVE DE COMPTE CHEQUES'                        => 'Relevé de compte chèques',
+            'RELEVE DE COMPTE CHEQUE'                         => 'Relevé de compte chèques',
+            'RELEVE COMPTE CHEQUES'                           => 'Relevé de compte chèques',
+            'RELEVE LIVRET DEV DURABLE ET SOLIDAIRE'          => 'Relevé Livret Développement Durable et Solidaire',
+            'RELEVE LIVRET DEVELOPPEMENT DURABLE ET SOLIDAIRE'=> 'Relevé Livret Développement Durable et Solidaire',
+            'RELEVE LIVRET DEV. DURABLE ET SOLIDAIRE'         => 'Relevé Livret Développement Durable et Solidaire',
+            'RELEVE LIVRET EPARGNE'                           => 'Relevé Livret Épargne',
+            'RELEVE LIVRET A'                                 => 'Relevé Livret A',
+            'RELEVE COMPTE COURANT'                           => 'Relevé de compte courant',
+            'RELEVE DE COMPTE COURANT'                        => 'Relevé de compte courant',
+            'RELEVE DE COMPTE ESPECES'                        => 'Relevé de compte espèces',
+        ];
+
+        $patterns = [
+            '/RELEV[EÉ]\s+(?:DE\s+)?(?:COMPTE\s+)?.{5,60}?(?=\s+P\.?\s*\d|\s*$)/u',
+        ];
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (strlen($line) < 10 || strlen($line) > 120) continue;
+            if (!str_contains($line, 'RELEV')) continue;
+
+            foreach ($patterns as $pattern) {
+                if (preg_match($pattern, $line, $m)) {
+                    $raw = preg_replace('/\s+P\.?\s*\d+.*$/u', '', trim($m[0]));
+                    $raw = trim(preg_replace('/\s+/u', ' ', $raw));
+                    if (strlen($raw) < 10) continue;
+
+                    // Chercher dans le dictionnaire (correspondance partielle)
+                    foreach ($knownLabels as $key => $value) {
+                        if (str_contains($raw, $key)) {
+                            return $value;
+                        }
+                    }
+
+                    // Correspondance exacte
+                    $clean = preg_replace('/[ÈÉÊ]/u', 'E', mb_strtoupper($raw));
+                    foreach ($knownLabels as $key => $value) {
+                        if (str_contains($clean, $key)) {
+                            return $value;
+                        }
+                    }
+
+                    // Fallback : retourner brut en title case si raisonnable
+                    if (strlen($raw) >= 10 && strlen($raw) <= 100) {
+                        return mb_convert_case(mb_strtolower($raw), MB_CASE_TITLE, 'UTF-8');
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     private function extractRibFromText(string $text): ?string
     {
         $upper = mb_strtoupper($text);

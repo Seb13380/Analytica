@@ -1426,26 +1426,33 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             $holderLower = mb_strtolower($holder);
                             // Utiliser account_type stocké en base (null = fallback heuristique)
                             $acType = $account->account_type ?? '';
+                            // Intitulé complet depuis account_label, sinon fallback sur account_type
+                            $acLabel = trim((string) ($account->account_label ?? ''));
                             if ($acType === 'joint') {
-                                $typeLabel = 'Compte commun';
+                                $typeLabel = $acLabel ?: 'Compte commun';
                             } elseif ($acType === 'savings') {
-                                $typeLabel = 'Livret / Épargne';
+                                $typeLabel = $acLabel ?: 'Livret / Épargne';
                             } elseif ($acType === 'personal') {
-                                $typeLabel = 'Compte personnel';
+                                $typeLabel = $acLabel ?: 'Compte personnel';
                             } else {
                                 // Fallback heuristique si colonne vide
                                 $isJoint = str_contains($holderLower, 'commun') || str_contains($holderLower, 'm. / mme') || str_contains($holderLower, 'mr et mme');
-                                $typeLabel = $isJoint ? 'Compte commun' : 'Compte personnel';
+                                $typeLabel = $acLabel ?: ($isJoint ? 'Compte commun' : 'Compte personnel');
                             }
                             // Si le titulaire est un label technique, ne pas l'afficher
                             $genericLabels = ['compte personnel', 'livret dev / épargne', 'livret dev / epargne', 'm. / mme', 'm. ou mme', ''];
                             $displayHolder = in_array($holderLower, $genericLabels) ? null : $holder;
+                            // Compter les chèques (débits + crédits de type cheque) sur ce compte
+                            $chequeCount = $account->transactions()
+                                ->where('type', 'cheque')
+                                ->count();
                             return [
-                                'bank'   => trim((string) ($account->bank_name ?? 'Banque')),
-                                'type'   => $typeLabel,
-                                'holder' => $displayHolder,
-                                'rib'    => trim((string) ($account->rib ?? '')),
-                                'iban'   => trim((string) ($account->iban_masked ?? '')),
+                                'bank'        => trim((string) ($account->bank_name ?? 'Banque')),
+                                'type'        => $typeLabel,
+                                'holder'      => $displayHolder,
+                                'rib'         => trim((string) ($account->rib ?? '')),
+                                'iban'        => trim((string) ($account->iban_masked ?? '')),
+                                'chequeCount' => $chequeCount,
                             ];
                         })->values();
                     @endphp
@@ -1474,11 +1481,13 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             accounts.forEach(function(ac) {
                                 var accountRef = ac.rib || ac.iban;
                                 var holderDisplay = ac.holder || (ac.type === 'Compte commun' ? 'M. / Mme' : '\u2014 (titulaire non renseign\u00e9)');
+                                var chequeInfo = (ac.chequeCount > 0) ? ac.chequeCount + '\u00a0ch\u00e8que' + (ac.chequeCount > 1 ? 's' : '') : '';
                                 html += '<tr>';
                                 html += '<td><strong>' + ac.bank + '</strong></td>';
                                 html += '<td>' + ac.type + '</td>';
                                 html += '<td>' + holderDisplay + '</td>';
-                                html += '<td class="ac-num">' + (accountRef ? 'RIB / N\u00b0\u00a0' + accountRef : '\u2014') + '</td>';
+                                html += '<td class="ac-num">' + (accountRef ? 'RIB\u00a0' + accountRef : '\u2014') + '</td>';
+                                html += '<td style="font-size:10px;color:#9B7A2A;">' + chequeInfo + '</td>';
                                 html += '</tr>';
                             });
                             html += '</table></div>';
@@ -1500,6 +1509,37 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                                 html += '</tr>';
                             }
                         });
+                        // ── Totaux ──
+                        var totalDebit = 0, totalCredit = 0, countDebit = 0, countCredit = 0;
+                        rows.forEach(function(row) {
+                            if (row.id && row.id.startsWith('tx-source')) return;
+                            var cells = row.querySelectorAll('td');
+                            if (cells.length >= 6) {
+                                var sens = (cells[4]?.textContent?.trim() || '').toLowerCase();
+                                var montantRaw = (cells[5]?.querySelector('button')?.textContent?.trim() || cells[5]?.textContent?.trim() || '').replace(/\s/g,'').replace(',','.');
+                                var val = parseFloat(montantRaw.replace(/[^0-9.]/g,'')) || 0;
+                                if (sens === 'd\u00e9bit') { totalDebit += val; countDebit++; }
+                                else if (sens === 'cr\u00e9dit') { totalCredit += val; countCredit++; }
+                            }
+                        });
+                        function fmtEur(v) { return v.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2}) + '\u00a0\u20ac'; }
+                        html += '<tr style="font-weight:700;border-top:2px solid #C9A84C;background:#FDFAF4;">';
+                        html += '<td colspan="3" style="font-size:11px;letter-spacing:0.05em;text-transform:uppercase;">Total (' + rows.length + '\u00a0op\u00e9ration' + (rows.length > 1 ? 's' : '') + ')</td>';
+                        html += '<td></td>';
+                        html += '<td style="font-size:11px;">D\u00e9bit\u00a0: ' + countDebit + '</td>';
+                        html += '<td class="amount" style="color:#b91c1c;">\u2212\u00a0' + fmtEur(totalDebit) + '</td>';
+                        html += '</tr>';
+                        html += '<tr style="font-weight:700;background:#FDFAF4;">';
+                        html += '<td colspan="3"></td><td></td>';
+                        html += '<td style="font-size:11px;">Cr\u00e9dit\u00a0: ' + countCredit + '</td>';
+                        html += '<td class="amount" style="color:#15803d;">+\u00a0' + fmtEur(totalCredit) + '</td>';
+                        html += '</tr>';
+                        var solde = totalCredit - totalDebit;
+                        html += '<tr style="font-weight:700;background:#F5EED8;border-top:1px solid #C9A84C;">';
+                        html += '<td colspan="4" style="font-size:11px;letter-spacing:0.05em;text-transform:uppercase;">Solde net</td>';
+                        html += '<td></td>';
+                        html += '<td class="amount" style="color:' + (solde >= 0 ? '#15803d' : '#b91c1c') + ';">' + (solde >= 0 ? '+' : '') + fmtEur(solde) + '</td>';
+                        html += '</tr>';
                         html += '</tbody></table>';
                         html += '<div class="footer">Document g\u00e9n\u00e9r\u00e9 automatiquement par Analytica \u2014 Usage strictement professionnel et confidentiel.</div>';
                         html += '</body></html>';
