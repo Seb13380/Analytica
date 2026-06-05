@@ -12,6 +12,7 @@ class BankAccount extends Model
         'case_id',
         'bank_name',
         'iban_masked',
+        'rib',
         'account_holder',
     ];
 

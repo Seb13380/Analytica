@@ -38,6 +38,7 @@ Route::middleware(['auth', 'accesslog'])->group(function () {
     Route::get('/reports/{report}/download', [ReportController::class, 'download'])->name('reports.download');
 
     Route::post('/cases/{case}/bank-accounts', [BankAccountController::class, 'store'])->name('bank-accounts.store');
+    Route::patch('/cases/{case}/bank-accounts/{bankAccount}/rib', [BankAccountController::class, 'updateRib'])->name('bank-accounts.update-rib');
     Route::post('/bank-accounts/{bankAccount}/statements', [StatementController::class, 'store'])->name('statements.store');
     Route::delete('/statements/{statement}', [StatementController::class, 'destroy'])->name('statements.destroy');
     Route::get('/cases/{case}/statements/{statement}/download', [CaseController::class, 'downloadStatement'])->name('statements.download');

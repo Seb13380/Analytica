@@ -1080,7 +1080,7 @@ a.text-blue-700:hover { color: #C9A84C !important; }
 
                         {{-- Filtres + seuil --}}
                         <div class="mt-3 flex flex-wrap items-end gap-4">
-                            <form method="GET" action="{{ route('cases.show', $case) }}" class="flex flex-wrap items-end gap-3 text-xs">
+                            <form method="GET" action="{{ route('cases.show', $case) }}#card-exceptional" class="flex flex-wrap items-end gap-3 text-xs">
                                 @foreach (request()->except('exceptional_threshold', 'page') as $key => $value)
                                     @if (is_array($value))
                                         @foreach ($value as $item)
@@ -1406,6 +1406,16 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                     function printExceptionalTable() {
                         var caseName = {!! json_encode($case->title ?? 'Dossier') !!};
                         var threshold = {!! json_encode(number_format((float)($exceptional_threshold ?? 20000), 0, ',', ' ')) !!};
+                        var accounts = {!! json_encode($case->bankAccounts->map(function ($account) use ($accountProfileById) {
+                            $profile = (string) ($accountProfileById[$account->getKey()] ?? 'personal');
+                            return [
+                                'bank'    => trim((string) ($account->bank_name ?? 'Banque')),
+                                'type'    => $profile === 'joint' ? 'Compte commun' : 'Compte personnel',
+                                'holder'  => trim((string) ($account->account_holder ?? ($profile === 'joint' ? 'M. / Mme' : ''))),
+                                'rib'     => trim((string) ($account->rib ?? '')),
+                                'iban'    => trim((string) ($account->iban_masked ?? '')),
+                            ];
+                        })->values()) !!};
                         var rows = document.querySelectorAll('#exceptional-tbody .exc-row:not([style*="display: none"])');
                         var activeType = 'Tous types';
                         document.querySelectorAll('.exc-type-btn').forEach(function(btn) {
@@ -1414,12 +1424,30 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                             }
                         });
                         var html = '<html><head><title>Montants exceptionnels \u2013 ' + caseName + '</title>';
-                        html += '<style>body{font-family:Georgia,serif;font-size:12px;color:#1C1916;padding:32px;} h1{font-size:1.5rem;font-weight:300;letter-spacing:0.04em;margin-bottom:4px;} .sub{font-size:0.75rem;color:#5C5449;margin-bottom:24px;} table{width:100%;border-collapse:collapse;} th{text-align:left;border-bottom:2px solid #C9A84C;padding:6px 8px;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;} td{padding:6px 8px;border-bottom:1px solid #EDE4D0;font-size:12px;} .amount{text-align:right;font-variant-numeric:tabular-nums;} .footer{margin-top:32px;font-size:9px;color:#8a7d6a;border-top:1px solid #EDE4D0;padding-top:8px;}</style>';
+                        html += '<style>body{font-family:Georgia,serif;font-size:12px;color:#1C1916;padding:32px;} h1{font-size:1.5rem;font-weight:300;letter-spacing:0.04em;margin-bottom:4px;} .sub{font-size:0.75rem;color:#5C5449;margin-bottom:12px;} .accounts-block{border:1px solid #EDE4D0;background:#FDFAF4;padding:10px 14px;margin-bottom:18px;border-radius:3px;} .accounts-block .ac-title{font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:#9B7A2A;font-weight:700;margin-bottom:6px;} .accounts-block table{width:auto;border-collapse:collapse;margin:0;} .accounts-block td{padding:2px 12px 2px 0;font-size:11px;border:none;} .accounts-block .ac-num{font-family:monospace;font-size:11px;color:#1C1916;font-weight:600;} table.tx{width:100%;border-collapse:collapse;} th{text-align:left;border-bottom:2px solid #C9A84C;padding:6px 8px;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;} td{padding:6px 8px;border-bottom:1px solid #EDE4D0;font-size:12px;} .amount{text-align:right;font-variant-numeric:tabular-nums;} .footer{margin-top:32px;font-size:9px;color:#8a7d6a;border-top:1px solid #EDE4D0;padding-top:8px;}</style>';
                         html += '</head><body>';
                         html += '<h1>Montants exceptionnels \u2014 ' + caseName + '</h1>';
                         html += '<div class="sub">Seuil : \u2265 ' + threshold + ' \u20ac &nbsp;\u00b7&nbsp; Filtre : ' + activeType + ' &nbsp;\u00b7&nbsp; G\u00e9n\u00e9r\u00e9 le {{ now()->format("d/m/Y") }}</div>';
+
+                        // Bloc comptes bancaires
+                        if (accounts.length > 0) {
+                            html += '<div class="accounts-block">';
+                            html += '<div class="ac-title">Comptes bancaires concern\u00e9s</div>';
+                            html += '<table>';
+                            accounts.forEach(function(ac) {
+                                var accountRef = ac.rib || ac.iban;
+                                html += '<tr>';
+                                html += '<td><strong>' + ac.bank + '</strong></td>';
+                                html += '<td>' + ac.type + '</td>';
+                                html += '<td>' + (ac.holder || '\u2014') + '</td>';
+                                html += '<td class="ac-num">' + (accountRef ? 'RIB / N\u00b0\u00a0' + accountRef : '\u2014') + '</td>';
+                                html += '</tr>';
+                            });
+                            html += '</table></div>';
+                        }
+
                         html += '<p style="font-size:11px;color:#5C5449;margin-bottom:16px;">Ce document liste les transactions financi\u00e8res exceptionnelles d\u00e9tect\u00e9es lors de l\'analyse du dossier. Il peut servir de base \u00e0 une demande de justificatifs adress\u00e9e aux \u00e9metteurs ou b\u00e9n\u00e9ficiaires concern\u00e9s.</p>';
-                        html += '<table><thead><tr><th>Date</th><th>Compte</th><th>Libell\u00e9</th><th>Type</th><th>Sens</th><th class="amount">Montant</th></tr></thead><tbody>';
+                        html += '<table class="tx"><thead><tr><th>Date</th><th>Compte</th><th>Libell\u00e9</th><th>Type</th><th>Sens</th><th class="amount">Montant</th></tr></thead><tbody>';
                         rows.forEach(function(row) {
                             if (row.id && row.id.startsWith('tx-source')) return;
                             var cells = row.querySelectorAll('td');
@@ -3772,6 +3800,28 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                                                     <div class="font-medium">{{ $account->bank_name }}</div>
                                                     <div class="text-sm text-gray-600">{{ $account->iban_masked ?? '—' }}</div>
                                                 </div>
+                                            </div>
+
+                                            {{-- N° de compte (RIB / IBAN) — saisie manuelle --}}
+                                            <div class="mt-3 border-t border-gray-100 pt-3">
+                                                <form method="POST" action="{{ route('bank-accounts.update-rib', [$case, $account]) }}" class="flex flex-wrap items-end gap-2">
+                                                    @csrf
+                                                    @method('PATCH')
+                                                    <div class="flex-1 min-w-[180px]">
+                                                        <label class="block text-xs font-medium text-gray-600 mb-1">N° de compte (RIB ou IBAN)</label>
+                                                        <input type="text" name="rib" value="{{ $account->rib ?? '' }}"
+                                                            placeholder="30004 00702 00002123116 60"
+                                                            class="w-full border-gray-300 rounded-md shadow-sm text-sm focus:border-green-500 focus:ring-green-500 font-mono" />
+                                                    </div>
+                                                    <button type="submit" class="px-3 py-2 text-xs font-semibold rounded border" style="background:#F8F4EE;border-color:#C9A84C;color:#7A5C1E;">
+                                                        Enregistrer
+                                                    </button>
+                                                </form>
+                                                @if ($account->rib)
+                                                    <div class="mt-1 text-xs font-mono" style="color:#059669;">✓ {{ $account->rib }}</div>
+                                                @else
+                                                    <div class="mt-1 text-xs text-gray-400">Non renseigné — sera extrait automatiquement si présent dans le relevé PDF</div>
+                                                @endif
                                             </div>
 
                                             <div class="mt-3">

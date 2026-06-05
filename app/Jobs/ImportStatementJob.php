@@ -182,6 +182,14 @@ class ImportStatementJob implements ShouldQueue
                     'ocr_used' => $ocrUsed,
                 ])->save();
 
+                // ── Extract RIB/IBAN from statement header and store on bank account ─
+                if (empty($bankAccount->rib)) {
+                    $ribExtracted = $this->extractRibFromText($text);
+                    if ($ribExtracted !== null) {
+                        $bankAccount->forceFill(['rib' => $ribExtracted])->save();
+                    }
+                }
+
                 if ($transactions === []) {
                     $statement->forceFill([
                         'import_status' => 'completed',
@@ -564,6 +572,47 @@ class ImportStatementJob implements ShouldQueue
             ])->save();
             throw $e;
         }
+    }
+
+    /**
+     * Extrait le RIB ou IBAN depuis le texte brut d'un relevé.
+     * Gère les formats : "RIB : 30004 00702 00002123116 60" et "IBAN : FR76 3000 4007 ..."
+     * Fonctionne pour toutes les banques françaises.
+     */
+    private function extractRibFromText(string $text): ?string
+    {
+        $upper = mb_strtoupper($text);
+
+        // RIB français : 5 chiffres banque + 5 chiffres guichet + 11 chiffres compte + 2 chiffres clé
+        // Format "RIB : 30004 00702 00002123116 60" ou "RIB 30004 00702 00002123116 60"
+        if (preg_match('/\bRIB\s*[:\-]?\s*([0-9\s]{20,30})\b/u', $upper, $m)) {
+            $rib = preg_replace('/\s+/', ' ', trim($m[1]));
+            // Valider : doit contenir exactement 23 chiffres au total
+            $digits = preg_replace('/\D/', '', $rib);
+            if ($digits !== null && strlen($digits) === 23) {
+                return $rib;
+            }
+        }
+
+        // IBAN français : FR + 2 chiffres + jusqu'à 23 caractères alphanumériques
+        if (preg_match('/\bIBAN\s*[:\-]?\s*(FR\s*\d{2}(?:\s*[A-Z0-9]{4}){4,6}(?:\s*[A-Z0-9]{0,3})?)\b/u', $upper, $m)) {
+            $iban = preg_replace('/\s+/', ' ', trim($m[1]));
+            return $iban;
+        }
+
+        // IBAN sans label (ligne contenant uniquement un IBAN dans les 30 premières lignes)
+        $lines = array_slice(explode("\n", $upper), 0, 50);
+        foreach ($lines as $line) {
+            if (preg_match('/\b(FR\d{2}(?:\s*[A-Z0-9]){18,27})\b/u', $line, $m)) {
+                $candidate = preg_replace('/\s+/', ' ', trim($m[1]));
+                $noSpaces = preg_replace('/\s/', '', $candidate) ?? '';
+                if (strlen($noSpaces) >= 14 && strlen($noSpaces) <= 34) {
+                    return $candidate;
+                }
+            }
+        }
+
+        return null;
     }
 
     private function extractPdfText(string $pdfBytes): string
