@@ -1424,13 +1424,25 @@ a.text-blue-700:hover { color: #C9A84C !important; }
                         $printAccounts = $case->bankAccounts->map(function ($account) {
                             $holder = trim((string) ($account->account_holder ?? ''));
                             $holderLower = mb_strtolower($holder);
-                            $isJoint = str_contains($holderLower, 'commun') || str_contains($holderLower, 'm. / mme') || str_contains($holderLower, 'mr et mme') || $holder === '';
+                            // Utiliser account_type stocké en base (null = fallback heuristique)
+                            $acType = $account->account_type ?? '';
+                            if ($acType === 'joint') {
+                                $typeLabel = 'Compte commun';
+                            } elseif ($acType === 'savings') {
+                                $typeLabel = 'Livret / Épargne';
+                            } elseif ($acType === 'personal') {
+                                $typeLabel = 'Compte personnel';
+                            } else {
+                                // Fallback heuristique si colonne vide
+                                $isJoint = str_contains($holderLower, 'commun') || str_contains($holderLower, 'm. / mme') || str_contains($holderLower, 'mr et mme');
+                                $typeLabel = $isJoint ? 'Compte commun' : 'Compte personnel';
+                            }
                             // Si le titulaire est un label technique, ne pas l'afficher
                             $genericLabels = ['compte personnel', 'livret dev / épargne', 'livret dev / epargne', 'm. / mme', 'm. ou mme', ''];
                             $displayHolder = in_array($holderLower, $genericLabels) ? null : $holder;
                             return [
                                 'bank'   => trim((string) ($account->bank_name ?? 'Banque')),
-                                'type'   => $isJoint ? 'Compte commun' : 'Compte personnel',
+                                'type'   => $typeLabel,
                                 'holder' => $displayHolder,
                                 'rib'    => trim((string) ($account->rib ?? '')),
                                 'iban'   => trim((string) ($account->iban_masked ?? '')),

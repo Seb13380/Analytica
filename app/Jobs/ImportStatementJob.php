@@ -199,6 +199,18 @@ class ImportStatementJob implements ShouldQueue
                     }
                 }
 
+                // ── Detect account type (joint/savings/personal) ──────────────────
+                if (empty($bankAccount->account_type)) {
+                    $upper = mb_strtoupper($text);
+                    if (preg_match('/\bM\.?\s+(?:OU|ET)\s+MME\.?\b/u', $upper)) {
+                        $bankAccount->forceFill(['account_type' => 'joint'])->save();
+                    } elseif (preg_match('/\bLIVRET\b|\bEPARGNE\b|\bLDD\b|\bLDDS\b|\bLEP\b/u', $upper)) {
+                        $bankAccount->forceFill(['account_type' => 'savings'])->save();
+                    } else {
+                        $bankAccount->forceFill(['account_type' => 'personal'])->save();
+                    }
+                }
+
                 if ($transactions === []) {
                     $statement->forceFill([
                         'import_status' => 'completed',

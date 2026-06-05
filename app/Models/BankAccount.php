@@ -11,6 +11,7 @@ class BankAccount extends Model
     protected $fillable = [
         'case_id',
         'bank_name',
+        'account_type',
         'iban_masked',
         'rib',
         'account_holder',
