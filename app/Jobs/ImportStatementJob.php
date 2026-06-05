@@ -190,6 +190,15 @@ class ImportStatementJob implements ShouldQueue
                     }
                 }
 
+                // ── Extract account holder name from statement header ─────────────
+                $genericHolders = ['compte personnel', 'livret dev / épargne', 'livret dev / epargne', 'm. / mme', 'm. ou mme', ''];
+                if (empty($bankAccount->account_holder) || in_array(mb_strtolower(trim($bankAccount->account_holder)), $genericHolders)) {
+                    $holderExtracted = $this->extractHolderFromText($text);
+                    if ($holderExtracted !== null) {
+                        $bankAccount->forceFill(['account_holder' => $holderExtracted])->save();
+                    }
+                }
+
                 if ($transactions === []) {
                     $statement->forceFill([
                         'import_status' => 'completed',
@@ -572,6 +581,47 @@ class ImportStatementJob implements ShouldQueue
             ])->save();
             throw $e;
         }
+    }
+
+    /**
+     * Extrait le nom du titulaire depuis l'en-tête d'un relevé bancaire.
+     * Gère les formats de toutes les banques françaises :
+     * - BNP  : "M OU MME CHRISTIAN GIORDANO" / "M ET MME GIORDANO"
+     * - CA   : "M. CHRISTIAN GIORDANO" / "MME LILIANE NOVAK"
+     * - SG   : "MONSIEUR CHRISTIAN GIORDANO"
+     * - LCL  : "M GIORDANO CHRISTIAN"
+     */
+    private function extractHolderFromText(string $text): ?string
+    {
+        // ── Priorité 1 : format BNP Succession ───────────────────────────────
+        // "Succession de : M. CHRISTIAN GIORDANO né GIORDANO"
+        if (preg_match('/Succession\s+de\s*:\s*(?:M(?:ONS(?:IEUR)?|ME|\.)?\.?|MME\.?|MADAME|MR\.?)\s+([A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ][A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ\- ]{1,50}?)(?:\s+n[eé]\b.*)?$/iu', $text, $m)) {
+            $name = preg_replace('/\s+né\b.*/iu', '', trim($m[1]));
+            $name = preg_replace('/\s+nee?\b.*/iu', '', $name);
+            return mb_convert_case(preg_replace('/\s+/', ' ', trim($name)), MB_CASE_TITLE, 'UTF-8');
+        }
+
+        // ── Priorité 2 : en-tête des relevés courants (80 premières lignes) ──
+        $upper = mb_strtoupper($text);
+        $lines = array_slice(explode("\n", $upper), 0, 80);
+        $cv = 'M(?:ONS(?:IEUR)?|ME|\.)?\.?|MME\.?|MADAME|MR\.?';
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (strlen($line) < 5 || strlen($line) > 80) continue;
+
+            // "M OU MME CHRISTIAN GIORDANO" (compte commun)
+            if (preg_match('/^(?:' . $cv . ')\s+(?:OU|ET)\s+(?:' . $cv . ')\s+([A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ][A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ\- ]{2,50})$/u', $line, $m)) {
+                return mb_convert_case(trim($m[1]), MB_CASE_TITLE, 'UTF-8');
+            }
+
+            // "M. CHRISTIAN GIORDANO" (prénom + nom)
+            if (preg_match('/^(?:' . $cv . ')\s+([A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ][A-Z]{1,20})\s+([A-ZÀÂÄÉÈÊËÏÎÔÙÛÜÇ][A-Z\-]{1,30})$/u', $line, $m)) {
+                return mb_convert_case($m[1], MB_CASE_TITLE, 'UTF-8') . ' ' . mb_convert_case($m[2], MB_CASE_TITLE, 'UTF-8');
+            }
+        }
+
+        return null;
     }
 
     /**
