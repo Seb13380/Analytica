@@ -39,6 +39,19 @@ class BankAccountController extends Controller
 
         $bankAccount->update(['rib' => $validated['rib'] ?? null]);
 
-        return redirect()->route('cases.show', $case)->with('status', 'N° de compte mis à jour.');
+        return redirect()->route('cases.show', $case, 301)->with('status', 'N° de compte mis à jour.').'#card-accounts';
+    }
+
+    public function updateHolder(Request $request, CaseFile $case, BankAccount $bankAccount)
+    {
+        Gate::authorize('update', $case);
+
+        $validated = $request->validate([
+            'account_holder' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $bankAccount->update(['account_holder' => $validated['account_holder'] ?? null]);
+
+        return redirect()->route('cases.show', $case)->with('status', 'Titulaire mis à jour.');
     }
 }
