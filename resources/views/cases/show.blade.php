@@ -377,21 +377,37 @@ a.text-blue-700:hover { color: #C9A84C !important; }
             @php
                 // ── Label normalisation helper (OCR cleanup) ──────────────────
                 function cleanBankLabel(string $raw): string {
-                    // Normalize case (title case, keep acronyms)
-                    $s = mb_convert_case(mb_strtolower($raw), MB_CASE_TITLE, 'UTF-8');
-                    // Remove common OCR/SEPA noise patterns
-                    $s = preg_replace('/\b(VIR|ViR|VIR\s+SEPA\s+REC[UÇ]?)\b/iu', 'Virement reçu –', $s);
-                    $s = preg_replace('/\b(VIR\s+SEPA\s+EMIS)\b/iu', 'Virement émis –', $s);
-                    $s = preg_replace('/\b(CHEQUE|CHQ)\b/iu', 'Chèque', $s);
-                    $s = preg_replace('/\b(PRLV\s+SEPA|PRELEVEMENT)\b/iu', 'Prélèvement –', $s);
-                    $s = preg_replace('/\b(CB|PAIEMENT\s+CB)\b/iu', 'Paiement carte –', $s);
-                    // Remove SEPA technical fields: /DE, /MOTF, /MOT:F, /REF, /RFA, etc.
+                    $s = $raw;
+
+                    // ── 1. Strip SEPA/OCR technical subfields before any case conversion ──
+                    // Remove blocks like: ID EMETTEUR/FR34ZZZ..., LIB/..., MDT/++..., ECH/..., REFBEN/..., REFDO/...
+                    $s = preg_replace('/\s+(?:ID\s+EMETTEUR|LIB|MDT|ECH|REFBEN|REFDO|RUM|ICS|CREDITOR)\s*\/\S+/iu', '', $s);
+                    // Remove SEPA fields: /DE, /MOTF, /MOT:F, /REF, /RFA, /BIC, /IBAN, etc.
                     $s = preg_replace('/\s*\/(DE|MOTF?|MOT:F?|REFDO?|RFA|BIC|IBAN|PR:X|VER|REF|Z\s*\d{3})\s+/iu', ' ', $s);
-                    // Remove stray special chars and repeated spaces
+                    // Remove stray reference codes after cheque number (e.g. "CHEQUE 1479621 FR44ZZZ...")
+                    $s = preg_replace('/\b([A-Z]{2}\d{2}[A-Z0-9]{3,})\b/', '', $s);
+
+                    // ── 2. For cheque entries: keep only "CHEQUE NNNNNNN" ─────────────────
+                    if (preg_match('/\b(?:CHEQUE|CHQ)\s+(\d{4,10})\b/iu', $s, $m)) {
+                        $s = 'CHEQUE '.$m[1];
+                    }
+
+                    // ── 3. Normalize case ────────────────────────────────────────────────
+                    $s = mb_convert_case(mb_strtolower($s), MB_CASE_TITLE, 'UTF-8');
+
+                    // ── 4. Human-readable keyword replacements ───────────────────────────
+                    $s = preg_replace('/\b(Vir\s+Sepa\s+Rec[uç]?)\b/iu', 'Virement reçu –', $s);
+                    $s = preg_replace('/\b(Vir\s+Sepa\s+Emis)\b/iu', 'Virement émis –', $s);
+                    $s = preg_replace('/\b(Vir\b)/iu', 'Virement –', $s);
+                    $s = preg_replace('/\b(Cheque|Chq)\b/iu', 'Chèque', $s);
+                    $s = preg_replace('/\b(Prlv\s+Sepa|Prelevement)\b/iu', 'Prélèvement –', $s);
+                    $s = preg_replace('/\b(Cb|Paiement\s+Cb)\b/iu', 'Paiement carte –', $s);
+
+                    // ── 5. Remove stray special chars, repeated spaces, trailing date artefacts ──
                     $s = preg_replace('/[\|\*\^]/', ' ', $s);
                     $s = preg_replace('/\s{2,}/', ' ', $s);
-                    // Remove trailing date artefacts like "26.02" or "16.02"
                     $s = preg_replace('/\s+\d{2}\.\d{2}\b/', '', $s);
+
                     return trim($s);
                 }
 
